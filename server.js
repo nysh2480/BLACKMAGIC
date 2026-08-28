@@ -16,7 +16,7 @@ const pool = new Pool({
 // 2. テーブルの自動作成（掲示板用のテーブル）
 async function initDB() {
   try {
-    // index.js の initDB 内
+    // server.js の initDB 内
 await pool.query(`
   CREATE TABLE IF NOT EXISTS messages (
     id SERIAL PRIMARY KEY,
