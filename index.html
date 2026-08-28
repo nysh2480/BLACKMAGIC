@@ -1,31 +1,66 @@
 <!DOCTYPE html>
 <html>
-  <head>
-    <title>BLACMAGIC</title>
-    <style>
-      ui:{background-color:#003; color:#ccf}
-    </style>
-  </head>
-  <body class='ui'>
-    <canvas id='screen'></canvas>
-    <div id='cui'>
-      <textarea id='code' class='ui' cols=80 rows=25></textarea><br>
-      <input type=button id='run' class='ui' value='RUN'>
-    </div>
-  </body>
-  <script>
-    const BLACK={
-      
-    }
+<head>
+	<title>BLACMAGIC</title>
+	<style>
+		.base	{background-color:#000; color:#ccf}
+		.unit	{background-color:#000; color:#ccf; border:solid 1px #ccf}
+	</style>
+</head>
+
+<body class="base">
+	<p>
+		<input type="button" class="unit" value="CUI" onclick="BLACK.SYS.ON(this.value)">
+		<input type="button" class="unit" value="GUI" onclick="BLACK.SYS.ON(this.value)">
+		<input type="button" class="unit" value="SERVER" onclick="BLACK.SYS.ON(this.value)">
+	</p>
+
+	<div id="GUI" style="display:none">
+		<canvas id="screen" class="unit"style="width:360px; height:240px"></canvas>
+	</div>
+
+	<div id='CUI' style="display:block">
+		<p>
+			<input type="button" class="unit" value="RUN" onclick="BLACK.Cbase.run(code.value)"><br>
+		</p>
+		<textarea id="code" class="unit" cols=80 rows=25></textarea>
+	</div>
+
+	<div id="SERVER" style="display:none">
+		<div>server</div>
+	</div>
+
+</body>
+
+<script>
+	const BLACK={
+		SYS: {
+			UI: [ "CUI", "GUI", "SERVER" ] ,
+			ON: function(focus){
+				for(let i=0; i<BLACK.SYS.UI.length; i++){
+					let display = (BLACK.SYS.UI[i]==focus) ? "block" : "none"
+					document.getElementById(focus).style.display = display
+				}
+			}
+		} ,
+      		GUI: {
+
+		} ,
+		CUI: {
+			RUN: function(code){
+				MAGIC.compile(code)
+			} ,
+		} ,
+		SERVER: {
+
+		}
+	}
     
-    const MAGIC={
-      compile:function(code){
+	const MAGIC={
+		compile: function(code){
+			console.log(code)
+		}
+	}
 
-      }
-    }
-
-    document.body.onkeydown=function(e){
-      
-    }
-  </script>
+</script>
 </html>
