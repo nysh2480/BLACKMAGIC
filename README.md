@@ -1,6 +1,6 @@
 BLACKMAGIC
 
-Basic Live Arena Construcntion Kit & Multi-media / multi-dimension Algorithm Game Instruction Code
+Basic Live Arena Construcntion Kit & Multi-media / Multi-dimension Algorithm Game Instruction Code
 
 *FEATURES
   + Pseudo 3D environment
