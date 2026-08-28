@@ -3,15 +3,17 @@
 <head>
 	<title>BLACMAGIC</title>
 	<style>
-		.base	{background-color:#000; color:#ccf}
-		.unit	{background-color:#000; color:#ccf; border:solid 1px #ccf}
+		.base	{background-color:#000; color:#ccf; user-select:none}
+		.unit	{background-color:#000; color:#ccf; border:solid 1px #ccf; user-select:none}
 	</style>
 </head>
 
-<body class="base">
+<body class="base" oncontextmenu="return false;" onload="BLACK.SYS.INIT()">
 	<p>
+		<b>BLACKMAGIC</b>
 		<input type="button" class="unit" value="CUI" onclick="BLACK.SYS.ON(this.value)">
 		<input type="button" class="unit" value="GUI" onclick="BLACK.SYS.ON(this.value)">
+		<input type="button" class="unit" value="SOUND" onclick="BLACK.SYS.ON(this.value)">
 		<input type="button" class="unit" value="SERVER" onclick="BLACK.SYS.ON(this.value)">
 	</p>
 
@@ -19,15 +21,20 @@
 		<canvas id="screen" class="unit"style="width:360px; height:240px"></canvas>
 	</div>
 
-	<div id='CUI' style="display:block">
+	<div id='CUI' style="display:none">
 		<p>
 			<input type="button" class="unit" value="RUN" onclick="BLACK.Cbase.run(code.value)"><br>
 		</p>
-		<textarea id="code" class="unit" cols=80 rows=25></textarea>
+		<textarea id="code" class="unit" cols=80 rows=25 style="user-select:contain"></textarea>
+	</div>
+
+
+	<div id="SOUND" style="display:none">
+		<div>SOUND</div>
 	</div>
 
 	<div id="SERVER" style="display:none">
-		<div>server</div>
+		<div>SERVER</div>
 	</div>
 
 </body>
@@ -35,12 +42,14 @@
 <script>
 	const BLACK={
 		SYS: {
-			UI: [ "CUI", "GUI", "SERVER" ] ,
+			UI: [ "CUI", "GUI", "SOUND", "SERVER" ] ,
 			ON: function(focus){
 				for(let i=0; i<BLACK.SYS.UI.length; i++){
-					let display = (BLACK.SYS.UI[i]==focus) ? "block" : "none"
-					document.getElementById(focus).style.display = display
+					document.getElementById(BLACK.SYS.UI[i]).style.display = (BLACK.SYS.UI[i]==focus) ? "block" : "none"
 				}
+			} ,
+			INIT: function(){
+				BLACK.SYS.ON("CUI")
 			}
 		} ,
       		GUI: {
@@ -61,6 +70,8 @@
 			console.log(code)
 		}
 	}
+
+
 
 </script>
 </html>
