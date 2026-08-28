@@ -3,12 +3,15 @@
   <head>
     <title>BLACMAGIC</title>
     <style>
-      {background-color:#003; color:#ccf}
+      ui:{background-color:#003; color:#ccf}
     </style>
   </head>
-  <body>
+  <body class='ui'>
     <canvas id='screen'></canvas>
-    <div id='ui'></div>
+    <div id='cui'>
+      <textarea id='code' class='ui' cols=80 rows=25></textarea><br>
+      <input type=text id='cmd' class='ui'>
+    </div>
   </body>
   <script>
     const BLACK={
@@ -20,6 +23,9 @@
 
       }
     }
-    
+
+    document.body.onkeydown=function(e){
+      
+    }
   </script>
 </html>
