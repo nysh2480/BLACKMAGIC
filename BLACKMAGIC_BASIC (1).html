@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>BLACKMAGIC Structured BASIC</title>
+<style>
+body{margin:12px;font-family:monospace;background:#000;color:#ccf}.base{background:#000;color:#ccf}.unit{background:#000;color:#ccf;border:1px solid #ccf;padding:4px}.nav{margin:8px 0}.nav .unit{min-width:76px}.panel{padding:8px;border:1px solid #336;min-height:280px}.panel h4{margin:0 0 8px}textarea{width:100%;box-sizing:border-box}.row{margin:6px 0}.err{color:#f88;white-space:pre-wrap}.ok{color:#8f8;white-space:pre-wrap}pre{white-space:pre-wrap}#screen{display:block;background:#111;width:360px;height:240px}
+</style>
+</head>
+<script type="text/plain" id="doc">
+# BLACKMAGIC Structured BASIC
+# BNF is the source of the parser/compiler structure.
+# Every reusable non-terminal maps to one get~ parser/compiler function.
+# Flat commands are dictionary dispatched; block commands are explicit.
+
+## Value
+<VALUE> ::= <NUMBER> | <STRING> | <VAR_REF> | <FUNCTION_CALL>
+Boolean: 0=False, non-zero=True.
+Numeric storage: Float64Array for DIM numeric arrays.
+String storage: normal JavaScript strings/Array for string arrays.
+
+## Program
+<PROGRAM> ::= <STMT>*
+<STMT> ::= <CTRL_STMT> | <CMD_STMT>
+
+## Structured control
+<CTRL_STMT> ::= <FOR_STMT> | <IF_STMT> | <WHILE_STMT> | <SUB_STMT>
+<FOR_STMT> ::= "FOR" <VARIABLE> "=" <EXPR> "TO" <EXPR> ("STEP" <EXPR>)? <STMT>* "NEXT"
+<IF_STMT> ::= "IF" <COND> "THEN" <STMT>* ("ELSE" <STMT>*)? "ENDIF"
+<WHILE_STMT> ::= "WHILE" <COND> <STMT>* "WEND"
+<SUB_STMT> ::= "SUB" <VARIABLE> "(" (<VARIABLE> ("," <VARIABLE>)*)? ")" <STMT>* "ENDSUB"
+
+## Condition
+<COND> ::= <OR_EXPR>
+<OR_EXPR> ::= <AND_EXPR> ("OR" <AND_EXPR>)*
+<AND_EXPR> ::= <NOT_EXPR> ("AND" <NOT_EXPR>)*
+<NOT_EXPR> ::= "NOT" <NOT_EXPR> | <COND_ATOM>
+<COND_ATOM> ::= "(" <OR_EXPR> ")" | <REL_EXPR>
+<REL_EXPR> ::= <EXPR> (<REL_OP> <EXPR>)?
+<REL_OP> ::= "=" | "<" | ">" | "<=" | ">=" | "<>"
+
+## Flat command extension point
+<CMD_STMT> ::= <COMMAND>
+<COMMAND> ::= KEYWORD + command-specific argument grammar
+# getCmdStmt reads KEYWORD and dispatches DIC.USER first, then DIC.BUILTIN.
+# Adding a flat command does not modify getStmt/getCmdStmt.
+
+## Core commands
+<LET_STMT> ::= "LET" <VARIABLE> ("(" <EXPR_LIST> ")")? "=" <EXPR>
+<DIM_STMT> ::= "DIM" <VARIABLE> "(" <INTEGER_LIST> ")"
+<PRINT_STMT> ::= "PRINT" <EXPR_LIST>
+<INPUT_STMT> ::= "INPUT" <VARIABLE_LIST>
+<REM_STMT> ::= "REM" <any text to newline>
+
+## Expression
+<EXPR> ::= <TERM> (("+" | "-") <TERM>)*
+<TERM> ::= <POWER> (("*" | "/" | "MOD") <POWER>)*
+<POWER> ::= <FACTOR> ("^" <FACTOR>)*
+<FACTOR> ::= "-" <FACTOR> | <ATOM>
+<ATOM> ::= "(" <EXPR> ")" | <NUMBER> | <STRING> | <FUNCTION_CALL> | <VAR_REF>
+<FUNCTION_CALL> ::= <FUNCTION> "(" <EXPR_LIST>? ")"
+<VAR_REF> ::= <VARIABLE> ("(" <EXPR_LIST> ")")?
+
+## Lists / terminals
+<VARIABLE_LIST> ::= <VARIABLE> ("," <VARIABLE>)*
+<EXPR_LIST> ::= <EXPR> ("," <EXPR>)*
+<INTEGER_LIST> ::= <INTEGER> ("," <INTEGER>)*
+<VARIABLE> ::= identifier [optional trailing $]
+<NUMBER> ::= non-negative number
+<INTEGER> ::= non-negative integer
+<STRING> ::= quoted string
+
+## Built-in expression functions
+ABS INT SGN SQR SIN COS TAN ASIN ACOS ATN EXP LOG LOG10 RND PI
+LEN LEFT$ RIGHT$ MID$ STR$ VAL MIN MAX
+
+## Structured command set
+LET DIM PRINT INPUT REM END STOP BREAK CONTINUE RETURN
+
+## Compiler mapping
+<X> ::= A B C  -> getX calls getA/getB/getC in sequence.
+<X> ::= A | B  -> tryGet A then B; failed alternatives restore input position.
+<X>* -> repeat until the next token cannot form X.
+CMD_STMT is the intentional dictionary exception.
+SUB definitions are registered into DIC.USER immediately; forward references are not supported.
+</script>
+<body class="base" oncontextmenu="return false;" onload="BLACK.SYS.INIT()">
+<h3>BLACKMAGIC Structured BASIC</h3>
+<div class="nav">
+<button class="unit" onclick="BLACK.SYS.ON('CUI')">CUI</button>
+<button class="unit" onclick="BLACK.SYS.ON('GUI')">GUI</button>
+<button class="unit" onclick="BLACK.SYS.ON('SOUND')">SOUND</button>
+<button class="unit" onclick="BLACK.SYS.ON('SERVER')">SERVER</button>
+</div>
+<div id="CUI" class="panel">
+<div class="row">
+<button class="unit" onclick="BLACK.CUI.RUN()">RUN</button>
+<button class="unit" onclick="BLACK.CUI.COMPILE()">COMPILE</button>
+<button class="unit" onclick="BLACK.CUI.TEST()">TEST</button>
+<button class="unit" onclick="BLACK.CUI.CLEAR()">CLEAR</button>
+</div>
+<textarea id="code" class="unit" rows="32">REM ==== Structured BASIC complete-core test ====
+DIM A(3,4)
+LET A(1,2) = 20
+LET X = A(1,2) + 5 * 2
+PRINT "X =", X
+
+IF X = 30 THEN
+  PRINT "IF OK"
+ELSE
+  PRINT "IF FAIL"
+ENDIF
+
+FOR I = 1 TO 3
+  PRINT "FOR", I
+NEXT
+
+FOR J = 10 TO 0 STEP -5
+  PRINT "STEP", J
+NEXT
+
+LET K = 0
+WHILE K < 3
+  PRINT "WHILE", K
+  LET K = K + 1
+WEND
+
+SUB ADDPRINT(X,Y)
+  PRINT "SUM", X + Y
+ENDSUB
+ADDPRINT 3,4
+
+PRINT ABS(-4), SQR(16), 2 ^ 3, 10 MOD 3
+PRINT LEFT$("BLACKMAGIC",5), LEN("ABC")</textarea>
+<pre id="out" class="unit"></pre>
+</div>
+<div id="GUI" class="panel" style="display:none">
+<h4>GUI</h4>
+<canvas id="screen" class="unit" width="360" height="240"></canvas>
+<div class="row"><button class="unit" onclick="BLACK.GUI.CLEAR()">CLEAR</button><button class="unit" onclick="BLACK.GUI.DEMO()">DEMO</button></div>
+</div>
+<div id="SOUND" class="panel" style="display:none">
+<h4>SOUND</h4>
+<div>Web Audio test interface</div>
+<div class="row"><button class="unit" onclick="BLACK.SOUND.BEEP()">BEEP</button><button class="unit" onclick="BLACK.SOUND.STOP()">STOP</button></div>
+<pre id="soundOut" class="unit">READY</pre>
+</div>
+<div id="SERVER" class="panel" style="display:none">
+<h4>SERVER</h4>
+<div>Server / network extension point</div>
+<pre id="serverOut" class="unit">OFFLINE
+No server module connected.</pre>
+</div>
+<script>
+const BLACK={
+ SYS:{
+  UI:['CUI','GUI','SOUND','SERVER'],
+  ON(name){
+   for(const id of this.UI){const el=document.getElementById(id);if(el)el.style.display=(id===name)?'block':'none';}
+   if(name==='GUI') BLACK.GUI.DEMO();
+  },
+  INIT(){this.ON('CUI');}
+ },
+ GUI:{
+  CLEAR(){const c=document.getElementById('screen'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);},
+  DEMO(){const c=document.getElementById('screen'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);x.strokeStyle='#88aaff';x.strokeRect(20,20,320,200);x.beginPath();x.moveTo(40,200);x.lineTo(180,60);x.lineTo(320,200);x.stroke();x.fillStyle='#ccf';x.font='20px monospace';x.fillText('BLACKMAGIC GUI',90,120);}
+ },
+ SOUND:{
+  ctx:null,osc:null,
+  BEEP(){try{this.ctx=this.ctx||new (window.AudioContext||window.webkitAudioContext)();this.STOP();this.osc=this.ctx.createOscillator();const g=this.ctx.createGain();this.osc.frequency.value=440;g.gain.value=.08;this.osc.connect(g).connect(this.ctx.destination);this.osc.start();document.getElementById('soundOut').textContent='PLAYING 440Hz';}catch(e){document.getElementById('soundOut').textContent='Audio error: '+e.message;}},
+  STOP(){if(this.osc){try{this.osc.stop();}catch(e){}this.osc.disconnect();this.osc=null;}const o=document.getElementById('soundOut');if(o)o.textContent='READY';}
+ },
+ SERVER:{},
+ CUI:{
+  RUN(){const out=document.getElementById('out');try{const js=MAGIC.compile(document.getElementById('code').value);new Function('magic',js)(MAGIC);out.className='unit ok';out.textContent='RUN OK\n\nGenerated JS:\n'+js}catch(e){out.className='unit err';out.textContent=e.stack||String(e)}},
+  COMPILE(){const out=document.getElementById('out');try{const js=MAGIC.compile(document.getElementById('code').value);out.className='unit';out.textContent=js}catch(e){out.className='unit err';out.textContent=e.stack||String(e)}},
+  TEST(){const samples=[
+   ['expression','LET A = 2 + 3 * 4\nPRINT A'],
+   ['array','DIM A(2,3)\nLET A(1,2)=7\nPRINT A(1,2)'],
+   ['condition','IF NOT (1 = 2) THEN\nPRINT "OK"\nENDIF'],
+   ['for-step','FOR I=5 TO 1 STEP -2\nPRINT I\nNEXT'],
+   ['while','LET I=0\nWHILE I<2\nPRINT I\nLET I=I+1\nWEND'],
+   ['sub','SUB F(X)\nPRINT X*2\nENDSUB\nF 9'],
+   ['functions','PRINT ABS(-3),SQR(9),10 MOD 4,2^4']
+  ];let r=[];for(const [n,s] of samples){try{MAGIC.compile(s);r.push('PASS '+n)}catch(e){r.push('FAIL '+n+': '+e.message)}}document.getElementById('out').className='unit';document.getElementById('out').textContent=r.join('\n')},
+  CLEAR(){document.getElementById('out').textContent=''}
+ }
+};
+const MAGIC={
+ pos:0,line:1,DIMS:{},BLOCKS:[],CURRENT_SUB:null,
+ ID_RE:/[A-Za-z_][A-Za-z0-9_]*\$?/y,NUM_RE:/\d+(?:\.\d+)?/y,STR_RE:/"(?:[^"\\]|\\.)*"/y,
+ ID_CHK:/^[A-Za-z_][A-Za-z0-9_]*\$?$/,NUM_CHK:/^\d+(?:\.\d+)?$/,INT_CHK:/^\d+$/,STR_CHK:/^"(?:[^"\\]|\\.)*"$/,
+ skip(code){while(this.pos<code.length){let c=code[this.pos];if(c===' '||c==='\t'||c==='\r')this.pos++;else if(c==='\n'){this.pos++;this.line++}else break}},
+ read(code){this.skip(code);if(this.pos>=code.length)return null;this.NUM_RE.lastIndex=this.pos;let m=this.NUM_RE.exec(code);if(m){this.pos=this.NUM_RE.lastIndex;return m[0]};let c=code[this.pos];if(c==='"'){this.STR_RE.lastIndex=this.pos;m=this.STR_RE.exec(code);if(m){this.pos=this.STR_RE.lastIndex;return m[0]}this.pos++;return null}if(',;+-*/=()<>^'.includes(c)){this.pos++;return c}this.ID_RE.lastIndex=this.pos;m=this.ID_RE.exec(code);if(m){this.pos=this.ID_RE.lastIndex;return m[0].toUpperCase()}this.pos++;return null},
+ peek(code){const p=this.pos,l=this.line;const x=this.read(code);this.pos=p;this.line=l;return x},
+ tryGet(parser,code){const p=this.pos,l=this.line;try{return parser.call(this,code)}catch(e){this.pos=p;this.line=l;return null}},
+ getOp(code,op){const t=this.read(code);if(t!==op)throw new Error('Syntax Error: expected '+op+' got '+t+' at line '+this.line);return t},
+ getVariable(code){const v=this.read(code);if(!v||!this.ID_CHK.test(v))throw new Error('Syntax Error: expected variable at line '+this.line);return v},
+ getValue(code){return this.read(code)},
+ getNumber(code){const v=this.getValue(code);if(!this.NUM_CHK.test(v||''))throw new Error('Syntax Error: expected number at line '+this.line);return v},
+ getInteger(code){const v=this.getValue(code);if(!this.INT_CHK.test(v||''))throw new Error('Syntax Error: expected integer at line '+this.line);return v},
+ getString(code){const v=this.getValue(code);if(!this.STR_CHK.test(v||''))throw new Error('Syntax Error: expected string at line '+this.line);return v},
+ getVariableList(code){const a=[this.getVariable(code)];while(true){const p=this.pos,l=this.line;if(this.tryGet(function(c){return this.getOp(c,',')},code)===null){this.pos=p;this.line=l;break}a.push(this.getVariable(code))}return a},
+ getExprList(code,optional=false){const p=this.pos,l=this.line;try{const a=[this.getExpr(code)];while(true){const q=this.pos,ll=this.line;if(this.tryGet(function(c){return this.getOp(c,',')},code)===null){this.pos=q;this.line=ll;break}a.push(this.getExpr(code))}return a}catch(e){if(optional){this.pos=p;this.line=l;return null}throw e}},
+ getIntList(code){const a=[this.getInteger(code)];while(true){const p=this.pos,l=this.line;if(this.tryGet(function(c){return this.getOp(c,',')},code)===null){this.pos=p;this.line=l;break}a.push(this.getInteger(code))}return a},
+ getProgram(code){const out=[];while(true){this.skip(code);if(this.pos>=code.length)break;const p=this.pos,l=this.line;const s=this.tryGet(this.getStmt,code);if(s===null){this.pos=p;this.line=l;break}if(s)out.push(s)}return out.join('\n')},
+ getStmt(code){return this.tryGet(this.getCtrlStmt,code)||this.tryGet(this.getCmdStmt,code)},
+ getCmdStmt(code){const p=this.pos,l=this.line;const k=this.read(code);if(!k){this.pos=p;this.line=l;return null}const h=this.DIC.USER[k]||this.DIC.BUILTIN[k];if(!h){this.pos=p;this.line=l;return null}return h.call(this,code)},
+ getCtrlStmt(code){return this.tryGet(this.getForStmt,code)||this.tryGet(this.getIfStmt,code)||this.tryGet(this.getWhileStmt,code)||this.tryGet(this.getSubStmt,code)},
+ getStmtList(code){const a=[];while(true){const p=this.pos,l=this.line;const s=this.tryGet(this.getStmt,code);if(s===null){this.pos=p;this.line=l;break}if(s)a.push(s)}return a},
+ getForStmt(code){this.getOp(code,'FOR');const n=this.getVariable(code);this.getOp(code,'=');const from=this.getExpr(code);this.getOp(code,'TO');const to=this.getExpr(code);let step=this.tryGet(c=>this.getOp(c,'STEP'),code);step=step?this.getExpr(code):'1';this.BLOCKS.push('FOR');const body=this.getStmtList(code);this.getOp(code,'NEXT');this.BLOCKS.pop();const id=this.temp();return '{\nlet '+id+'to=('+to+'), '+id+'step=('+step+');\nfor(var '+n+'=('+from+'); '+id+'step>=0 ? '+n+'<='+id+'to : '+n+'>='+id+'to; '+n+'+='+id+'step){\n'+body.join('\n')+'\n}\n}'},
+ getIfStmt(code){this.getOp(code,'IF');const c=this.getCond(code);this.getOp(code,'THEN');this.BLOCKS.push('IF');const a=this.getStmtList(code);let js='if('+c+'){\n'+a.join('\n')+'\n}';const has=this.tryGet(c=>this.getOp(c,'ELSE'),code);if(has){const b=this.getStmtList(code);js+='else{\n'+b.join('\n')+'\n}'}this.getOp(code,'ENDIF');this.BLOCKS.pop();return js},
+ getWhileStmt(code){this.getOp(code,'WHILE');const c=this.getCond(code);this.getOp(code,'WEND');this.pos-=4; // restore to reparse body position safely
+ // The line above cannot be used because WEND is after body. Rewind is replaced below.
+ throw new Error('internal WHILE parser marker')},
+ getSubStmt(code){this.getOp(code,'SUB');const n=this.getVariable(code);this.getOp(code,'(');const params=this.tryGet(this.getVariableList,code)||[];this.getOp(code,')');this.BLOCKS.push('SUB');this.CURRENT_SUB=n;const body=this.getStmtList(code);this.getOp(code,'ENDSUB');this.BLOCKS.pop();this.CURRENT_SUB=null;this.DIC.USER[n]=(c)=>{const args=this.getExprList(c,true)||[];return n+'('+args.join(', ')+');'};return 'function '+n+'('+params.join(', ')+'){\n'+body.join('\n')+'\n}'},
+ getCond(code){return this.getOrExpr(code)},
+ getOrExpr(code){let x=this.getAndExpr(code);while(true){const p=this.pos,l=this.line;if(this.tryGet(c=>this.getOp(c,'OR'),code)===null){this.pos=p;this.line=l;break}x='(('+x+') || ('+this.getAndExpr(code)+'))'}return x},
+ getAndExpr(code){let x=this.getNotExpr(code);while(true){const p=this.pos,l=this.line;if(this.tryGet(c=>this.getOp(c,'AND'),code)===null){this.pos=p;this.line=l;break}x='(('+x+') && ('+this.getNotExpr(code)+'))'}return x},
+ getNotExpr(code){if(this.tryGet(c=>this.getOp(c,'NOT'),code)!==null)return '!('+this.getNotExpr(code)+')';return this.getCondAtom(code)},
+ getCondAtom(code){if(this.tryGet(c=>this.getOp(c,'('),code)!==null){const x=this.getOrExpr(code);this.getOp(code,')');return '('+x+')'}return this.getRelExpr(code)},
+ getRelExpr(code){const l=this.getExpr(code),p=this.pos,ll=this.line;const op=this.tryGet(this.getRelOp,code);if(op)return l+' '+op+' '+this.getExpr(code);this.pos=p;this.line=ll;return '('+l+') !== 0'},
+ getRelOp(code){const x=this.read(code);if(x==='=')return '===';if(x==='<'){if(code[this.pos]==='='){this.pos++;return '<='}if(code[this.pos]==='>'){this.pos++;return '!=='}return '<'}if(x==='>'){if(code[this.pos]==='='){this.pos++;return '>='}return '>'}throw new Error('not relational operator')},
+ getExpr(code){let x=this.getTerm(code);while(true){const p=this.pos,l=this.line;const op=this.tryGet(c=>{const t=this.read(c);if(t==='+'||t==='-')return t;throw 0},code);if(op===null){this.pos=p;this.line=l;break}x='('+x+' '+op+' '+this.getTerm(code)+')'}return x},
+ getTerm(code){let x=this.getPower(code);while(true){const p=this.pos,l=this.line;let op=this.tryGet(c=>{const t=this.read(c);if(t==='*'||t==='/')return t;if(t==='MOD')return '%';throw 0},code);if(op===null){this.pos=p;this.line=l;break}x='('+x+' '+op+' '+this.getPower(code)+')'}return x},
+ getPower(code){let x=this.getFactor(code);const p=this.pos,l=this.line;if(this.tryGet(c=>this.getOp(c,'^'),code)!==null)x='Math.pow('+x+','+this.getPower(code)+')';else{this.pos=p;this.line=l}return x},
+ getFactor(code){if(this.tryGet(c=>this.getOp(c,'-'),code)!==null)return '-('+this.getFactor(code)+')';return this.getAtom(code)},
+ getAtom(code){if(this.tryGet(c=>this.getOp(c,'('),code)!==null){const x=this.getExpr(code);this.getOp(code,')');return '('+x+')'}const n=this.tryGet(this.getNumber,code);if(n!==null)return n;const s=this.tryGet(this.getString,code);if(s!==null)return s;const p=this.pos,l=this.line;try{const name=this.getVariable(code);if(this.peek(code)==='(' && this.DIC.FUNCTION[name]){this.getOp(code,'(');const args=this.getExprList(code,true)||[];this.getOp(code,')');return this.DIC.FUNCTION[name](args)}this.pos=p;this.line=l}catch(e){this.pos=p;this.line=l}return this.getVarRef(code)},
+ getVarRef(code){const n=this.getVariable(code);const p=this.pos,l=this.line;if(this.tryGet(c=>this.getOp(c,'('),code)!==null){const idx=this.getExprList(code);this.getOp(code,')');return n+'['+this.getLinearIndex(n,idx)+']'}this.pos=p;this.line=l;return n},
+ getLinearIndex(name,idx){const d=this.DIMS[name];if(!d)throw new Error('Array '+name+' is not DIMed');if(idx.length!==d.dims.length)throw new Error('Array '+name+' expects '+d.dims.length+' indices');return idx.map((x,i)=>'('+x+')*'+d.strides[i]).join('+')||'0'},
+ temp(){this._temp=(this._temp||0)+1;return '__b'+this._temp+'_'},
+ registerCommand(name,handler){this.DIC.BUILTIN[name]=handler},
+ registerFunction(name,handler){this.DIC.FUNCTION[name]=handler},
+ DIC:{BUILTIN:{},USER:{},FUNCTION:{}},
+ compile(code){this.pos=0;this.line=1;this.DIMS={};this.DIC.USER={};this.BLOCKS=[];this.CURRENT_SUB=null;this._temp=0;const js=this.getProgram(code);this.skip(code);if(this.pos<code.length)throw new Error('Syntax Error: unexpected '+this.read(code)+' at line '+this.line);return js}
+};
+// Fix WHILE parser with the same explicit block strategy as the other controls.
+MAGIC.getWhileStmt=function(code){this.getOp(code,'WHILE');const c=this.getCond(code);this.BLOCKS.push('WHILE');const body=this.getStmtList(code);this.getOp(code,'WEND');this.BLOCKS.pop();return 'while('+c+'){\n'+body.join('\n')+'\n}'};
+// Built-in flat commands. All additions below use the same DIC interface.
+MAGIC.registerCommand('LET',function(code){const n=this.getVariable(code);const p=this.pos,l=this.line;if(this.tryGet(c=>this.getOp(c,'('),code)!==null){const idx=this.getExprList(code);this.getOp(code,')');this.getOp(code,'=');const v=this.getExpr(code);return n+'['+this.getLinearIndex(n,idx)+'] = '+v+';'}this.pos=p;this.line=l;this.getOp(code,'=');return n+' = '+this.getExpr(code)+';'});
+MAGIC.registerCommand('DIM',function(code){const n=this.getVariable(code);this.getOp(code,'(');const dims=this.getIntList(code).map(Number);this.getOp(code,')');let total=1,strides=new Array(dims.length);for(let i=dims.length-1;i>=0;i--){strides[i]=total;total*=dims[i]}this.DIMS[n]={dims,strides};return n.endsWith('$')?'var '+n+' = new Array('+total+');':'var '+n+' = new Float64Array('+total+');'});
+MAGIC.registerCommand('PRINT',function(code){const a=this.getExprList(code);return 'console.log('+a.join(', ')+');'});
+MAGIC.registerCommand('INPUT',function(code){return this.getVariableList(code).map(n=>n.endsWith('$')?n+' = prompt("'+n+'?");':n+' = Number(prompt("'+n+'?"));').join('\n')});
+MAGIC.registerCommand('REM',function(code){while(this.pos<code.length&&code[this.pos]!=='\n')this.pos++;return ''});
+MAGIC.registerCommand('END',function(){return 'return;'});
+MAGIC.registerCommand('STOP',function(){return 'return;'});
+MAGIC.registerCommand('BREAK',function(){if(!this.BLOCKS.includes('FOR')&&!this.BLOCKS.includes('WHILE'))throw new Error('BREAK outside loop at line '+this.line);return 'break;'});
+MAGIC.registerCommand('CONTINUE',function(){if(!this.BLOCKS.includes('FOR')&&!this.BLOCKS.includes('WHILE'))throw new Error('CONTINUE outside loop at line '+this.line);return 'continue;'});
+MAGIC.registerCommand('RETURN',function(){if(!this.CURRENT_SUB)throw new Error('RETURN outside SUB at line '+this.line);return 'return;'});
+// Expression functions: each handler returns JavaScript expression text.
+const F=MAGIC.registerFunction.bind(MAGIC);
+F('ABS',a=>'Math.abs('+a[0]+')');F('INT',a=>'Math.floor('+a[0]+')');F('SGN',a=>'Math.sign('+a[0]+')');F('SQR',a=>'Math.sqrt('+a[0]+')');
+F('SIN',a=>'Math.sin('+a[0]+')');F('COS',a=>'Math.cos('+a[0]+')');F('TAN',a=>'Math.tan('+a[0]+')');F('ASIN',a=>'Math.asin('+a[0]+')');F('ACOS',a=>'Math.acos('+a[0]+')');F('ATN',a=>'Math.atan('+a[0]+')');F('EXP',a=>'Math.exp('+a[0]+')');F('LOG',a=>'Math.log('+a[0]+')');F('LOG10',a=>'Math.log10('+a[0]+')');
+F('RND',a=>'Math.random()');F('PI',a=>'Math.PI');F('LEN',a=>'String('+a[0]+').length');F('LEFT$',a=>'String('+a[0]+').substring(0,'+a[1]+')');F('RIGHT$',a=>'String('+a[0]+').slice(-('+a[1]+'))');F('MID$',a=>'String('+a[0]+').substring(('+a[1]+')-1'+(a[2]!==undefined?',('+a[1]+')-1+('+a[2]+')':')')+')');F('STR$',a=>'String('+a[0]+')');F('VAL',a=>'Number('+a[0]+')');F('MIN',a=>'Math.min('+a.join(',')+')');F('MAX',a=>'Math.max('+a.join(',')+')');
+</script>
+</body>
+</html>
