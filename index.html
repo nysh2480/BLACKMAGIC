@@ -1,4 +1,5 @@
-﻿<!DOCTYPE html>
+
+<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
@@ -11,20 +12,28 @@
 # BLACKMAGIC Structured BASIC
 # BNF is the source of the parser/compiler structure.
 # Every reusable non-terminal maps to one get~ parser/compiler function.
-# Flat commands are dictionary dispatched; block commands are explicit.
+# All statements (control and flat) are dictionary dispatched from a single keyword read; block bodies are explicit.
 
 ## Value
 <VALUE> ::= <NUMBER> | <STRING> | <VAR_REF> | <FUNCTION_CALL>
-Boolean: 0=False, non-zero=True.
 Numeric storage: Float64Array for DIM numeric arrays.
 String storage: normal JavaScript strings/Array for string arrays.
+# Boolean values are NOT part of <VALUE>: <COND> (see below) is a separate grammar silo used only
+# by IF/WHILE headers, so a comparison result cannot be assigned to a variable, stored in an
+# array, or passed as a function argument in this language. Where <COND> reduces to a bare <EXPR>
+# with no relational operator (e.g. "IF X THEN"), getRelExpr falls back to "(X) !== 0", i.e.
+# 0=False/non-zero=True for that one case; a genuine A=B comparison compiles to native JS
+# true/false via ===, and that boolean is only ever consumed by the if()/while() it was built for.
 
 ## Program
 <PROGRAM> ::= <STMT>*
 <STMT> ::= <CTRL_STMT> | <CMD_STMT>
+# getStmt reads KEYWORD once and dispatches DIC.CTRL, then DIC.USER, then DIC.BUILTIN.
+# The dispatcher (not the individual get~ handler) consumes the leading keyword for every entry in DIC.CTRL/USER/BUILTIN.
 
 ## Structured control
 <CTRL_STMT> ::= <FOR_STMT> | <IF_STMT> | <WHILE_STMT> | <SUB_STMT>
+# Each *_STMT handler below assumes its leading keyword ("FOR"/"IF"/"WHILE"/"SUB") was already consumed by getStmt; the BNF keyword tokens are shown for grammar reference only and are not re-read inside the handler.
 <FOR_STMT> ::= "FOR" <VARIABLE> "=" <EXPR> "TO" <EXPR> ("STEP" <EXPR>)? <STMT>* "NEXT"
 <IF_STMT> ::= "IF" <COND> "THEN" <STMT>* ("ELSE" <STMT>*)? "ENDIF"
 <WHILE_STMT> ::= "WHILE" <COND> <STMT>* "WEND"
@@ -42,14 +51,19 @@ String storage: normal JavaScript strings/Array for string arrays.
 ## Flat command extension point
 <CMD_STMT> ::= <COMMAND>
 <COMMAND> ::= KEYWORD + command-specific argument grammar
-# getCmdStmt reads KEYWORD and dispatches DIC.USER first, then DIC.BUILTIN.
-# Adding a flat command does not modify getStmt/getCmdStmt.
+# Adding a flat command (registerCommand) or a new block control (registerControl) does not modify getStmt.
 
 ## Core commands
 <LET_STMT> ::= "LET" <VARIABLE> ("(" <EXPR_LIST> ")")? "=" <EXPR>
 <DIM_STMT> ::= "DIM" <VARIABLE> "(" <INTEGER_LIST> ")"
 <PRINT_STMT> ::= "PRINT" <EXPR_LIST>
 <INPUT_STMT> ::= "INPUT" <VARIABLE_LIST>
+<DIALOG_STMT> ::= "DIALOG" <EXPR_LIST>
+# DIALOG shows its EXPR_LIST (joined with a space, same join rule as PRINT) as a message box
+# centered over the GUI canvas and suspends the running script (compiles to
+# "await BLACK.GUI.DIALOG_ASYNC(...)") until the player presses E/Enter or taps the on-screen
+# [E] CONTINUE button to dismiss it. Unlike INPUT, it collects no text -- it is an
+# acknowledge-to-continue message box, not a value prompt.
 <REM_STMT> ::= "REM" <any text to newline>
 
 ## Expression
@@ -81,7 +95,7 @@ LET DIM PRINT INPUT REM END STOP BREAK CONTINUE RETURN
 <X> ::= A B C  -> getX calls getA/getB/getC in sequence.
 <X> ::= A | B  -> tryGet A then B; failed alternatives restore input position.
 <X>* -> repeat until the next token cannot form X.
-CMD_STMT is the intentional dictionary exception.
+CTRL_STMT and CMD_STMT are both dictionary dispatched (DIC.CTRL / DIC.USER / DIC.BUILTIN); there is no sequential try-chain across statement kinds.
 SUB definitions are registered into DIC.USER immediately; forward references are not supported.
 </script>
 <script type="text/doc" id="ai-instructions">
@@ -95,14 +109,15 @@ SUB definitions are registered into DIC.USER immediately; forward references are
 </script>
 </head>
 <body class="base" oncontextmenu="return false;" onload="BLACK.SYS.INIT()">
-<h3>BLACKMAGIC</h3>
-<div class="unit">
-<button class="unit" onclick="BLACK.SYS.ON('CUI')">CUI</button>
-<button class="unit" onclick="BLACK.SYS.ON('GUI')">GUI</button>
-<button class="unit" onclick="BLACK.SYS.ON('GRAPHIC')">GRAPHIC</button>
-<button class="unit" onclick="BLACK.SYS.ON('SOUND')">SOUND</button>
-<button class="unit" onclick="BLACK.SYS.ON('SERVER')">SERVER</button>
-<button class="unit" onclick="BLACK.SYS.ON('USER')">USER</button>
+<h4>BLACKMAGIC</h4>
+<div id="navUI" class="unit">
+<button class="unit" data-tab="CUI" onclick="BLACK.SYS.ON('CUI')">CUI</button>
+<button class="unit" data-tab="GUI" onclick="BLACK.SYS.ON('GUI')">GUI</button>
+<button class="unit" data-tab="GRAPHIC" onclick="BLACK.SYS.ON('GRAPHIC')">GRAPHIC</button>
+<button class="unit" data-tab="SOUND" onclick="BLACK.SYS.ON('SOUND')">SOUND</button>
+<button class="unit" data-tab="SERVER" onclick="BLACK.SYS.ON('SERVER')">SERVER</button>
+<button class="unit" data-tab="USER" onclick="BLACK.SYS.ON('USER')">USER</button>
+<button class="unit" data-tab="PROJECT" onclick="BLACK.SYS.ON('PROJECT')">PROJECT</button>
 </div>
 <div id="CUI" class="unit">
 <h4>CUI</h4>
@@ -112,53 +127,152 @@ SUB definitions are registered into DIC.USER immediately; forward references are
 <button class="unit" onclick="BLACK.CUI.TEST()">TEST</button>
 <button class="unit" onclick="BLACK.CUI.CLEAR()">CLEAR</button>
 </div>
-<textarea id="code" class="unit" cols="80" rows="40">REM ==== Structured BASIC complete-core test ====
-DIM A(3,4)
-LET A(1,2) = 20
-LET X = A(1,2) + 5 * 2
-PRINT "X =", X
+<textarea id="code" class="unit" cols="80" rows="40">REM ==== VAULT ESCAPE: a BLACKMAGIC BASIC tutorial ====
+REM Solve four short trials to unlock the vault door, then
+REM open the GUI tab, walk up to the door and press E (or
+REM tap it) to swing it open and walk free.
 
-IF X = 30 THEN
-  PRINT "IF OK"
+REM --- GRAPHIC bridge commands reference assets already ---
+REM --- authored on the GRAPHIC pages, by index only.    ---
+SETFLOOR 1
+SETCEIL 2
+TELEPORT 4.5, 8.5, 0
+PLAYMOVIE 0
+
+REM --- SOUND bridge: load three cues (correct/wrong/win) ---
+LET MML$ = "MASTER BPM=140 VOL=80\nWAVE 0 OSC1=TRIANGLE USE2=0 OSC2=SQUARE COMBINE=ADD FILTER=LOW CUTOFF=1800 Q=6 A=5 D=120 S=40 R=180\nWAVE 1 OSC1=SQUARE USE2=0 OSC2=SQUARE COMBINE=ADD FILTER=LOW CUTOFF=500 Q=3 A=1 D=90 S=0 R=60\nWAVE 2 OSC1=SQUARE USE2=1 OSC2=TRIANGLE COMBINE=ADD FILTER=LOW CUTOFF=4000 Q=4 A=2 D=140 S=50 R=220\nNOTE 0 STEPS=8 BAR=8 DATA=C4,,E4,,G4,,C5,\nNOTE 1 STEPS=1 BAR=4 DATA=A2\nNOTE 2 STEPS=8 BAR=8 DATA=C4,E4,G4,C5,E5,G5,C6,\nTRACK 0 WAVE=0 NOTE=0 VOL=100 PAN=0\nTRACK 1 WAVE=1 NOTE=1 VOL=90 PAN=0\nTRACK 2 WAVE=2 NOTE=2 VOL=100 PAN=0"
+SNDLOAD "vault", MML$
+
+PRINT "You wake up in a stone vault. A locked gold door blocks"
+PRINT "the only way out. Four trials stand between you and"
+PRINT "freedom - each one teaches a piece of BASIC."
+PRINT ""
+
+REM ===== Trial 1: LET + PRINT + arithmetic =====
+PRINT "TRIAL 1 - THE LOCK CODE"
+PRINT "A LET statement just computed CODE = 3 * 7 + 1."
+PRINT "PRINT shows you the answer below - type it back to me."
+LET CODE = 3 * 7 + 1
+PRINT CODE
+WHILE 1
+INPUT A1
+IF A1 = CODE THEN
+PRINT "Correct! The first bolt slides open."
+SNDPLAYNOTE "vault", 0, 0
+BREAK
 ELSE
-  PRINT "IF FAIL"
+PRINT "Not quite - the number PRINT just showed you IS the code."
+SNDPLAYNOTE "vault", 1, 1
 ENDIF
-
-FOR I = 1 TO 3
-  PRINT "FOR", I
-NEXT
-
-FOR J = 10 TO 0 STEP -5
-  PRINT "STEP", J
-NEXT
-
-LET K = 0
-WHILE K < 3
-  PRINT "WHILE", K
-  LET K = K + 1
 WEND
+PRINT ""
 
-SUB ADDPRINT(X,Y)
-  PRINT "SUM", X + Y
+REM ===== Trial 2: IF/THEN/ELSE + string compare =====
+PRINT "TRIAL 2 - THE RIDDLE"
+PRINT "I have keys but no locks, space but no room, you can"
+PRINT "enter but not go outside. What am I? (one word, all caps)"
+WHILE 1
+INPUT A2$
+IF A2$ = "KEYBOARD" THEN
+PRINT "Correct! The second bolt slides open."
+SNDPLAYNOTE "vault", 0, 0
+BREAK
+ELSE
+PRINT "Not quite - think about what you type on. Answer: KEYBOARD"
+SNDPLAYNOTE "vault", 1, 1
+ENDIF
+WEND
+PRINT ""
+
+REM ===== Trial 3: FOR/NEXT accumulation =====
+PRINT "TRIAL 3 - THE FIVE TORCHES"
+PRINT "A FOR loop is about to add up the torches on the wall,"
+PRINT "one by one, into a running TOTAL."
+LET TOTAL = 0
+FOR I = 1 TO 5
+LET TOTAL = TOTAL + I
+NEXT
+PRINT "It just computed 1+2+3+4+5. What did it get?"
+WHILE 1
+INPUT A3
+IF A3 = TOTAL THEN
+PRINT "Correct! The third bolt slides open."
+SNDPLAYNOTE "vault", 0, 0
+BREAK
+ELSE
+PRINT "Not quite - add 1+2+3+4+5 yourself and try again."
+SNDPLAYNOTE "vault", 1, 1
+ENDIF
+WEND
+PRINT ""
+
+REM ===== Trial 4: DIM (string array) + SUB with a parameter =====
+DIM LETTER$(4)
+LET LETTER$(0) = "E"
+LET LETTER$(1) = "X"
+LET LETTER$(2) = "I"
+LET LETTER$(3) = "T"
+SUB REVEAL(N)
+PRINT "Letter " + STR$(N + 1) + ": " + LETTER$(N)
 ENDSUB
-ADDPRINT 3,4
+PRINT "TRIAL 4 - THE FINAL WORD"
+PRINT "A SUB called REVEAL prints one letter per call. A FOR"
+PRINT "loop is calling it four times, once per array slot:"
+FOR I = 0 TO 3
+REVEAL I
+NEXT
+PRINT "Type the word those four letters spell (all caps)."
+WHILE 1
+INPUT A4$
+IF A4$ = "EXIT" THEN
+PRINT "Correct! The final bolt slides open."
+SNDPLAYNOTE "vault", 0, 0
+BREAK
+ELSE
+PRINT "Not quite - read the letters REVEAL printed, in order."
+SNDPLAYNOTE "vault", 1, 1
+ENDIF
+WEND
+PRINT ""
 
-PRINT ABS(-4), SQR(16), 2 ^ 3, 10 MOD 3
-PRINT LEFT$("BLACKMAGIC",5), LEN("ABC")</textarea>
+REM ===== Victory: unlock the door for the GUI interact system =====
+SETDOORKEY 1
+SNDPLAYNOTE "vault", 2, 2
+PRINT "All four bolts are open! The vault door is unlocked."
+PRINT "Open the GUI tab, walk up to the gold door, and press"
+PRINT "E (or tap the on-screen button) to swing it open."</textarea>
 <pre id="out" class="unit"></pre>
 </div>
 <div id="GUI" class="unit panel" style="display:none">
 <h4>GUI</h4>
-<canvas id="screen" class="unit" width="360" height="240"></canvas>
+<!-- guiViewport is the positioning root for the canvas overlay: guiDialog is absolutely
+     centered over the canvas (not placed below it) so PRINT scrollback, INPUT prompts, and
+     DIALOG messages all render as an overlay on top of the first-person view instead of a
+     separate panel under the screen. -->
+<div id="guiViewport" style="position:relative;width:360px">
+<canvas id="screen" class="unit" width="360" height="240" style="display:block"></canvas>
+<div id="guiDialog" class="unit" style="display:none;position:absolute;left:8px;right:8px;top:50%;transform:translateY(-50%);background:#000;opacity:0.88;font-family:monospace;font-size:12px;white-space:pre-wrap;max-height:80%;overflow-y:auto;text-align:left;pointer-events:auto" onclick="BLACK.GUI.FOCUS_INPUT()">
+<input id="guiHiddenInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none" oninput="BLACK.GUI._ECHO_INPUT()" onkeydown="BLACK.GUI._HIDDEN_KEYDOWN(event)">
+<span id="guiDialogText"></span>
+<div id="guiDialogKeyHint" style="text-align:right;opacity:0.7"></div>
+</div>
+</div>
+<!-- No 4-direction pad: movement is WASD/arrow keys only. guiInteractBtn doubles as the
+     touch affordance for both door-interact and dismissing a DIALOG_ASYNC message box
+     (see BLACK.GUI.INTERACT). ENTER button removed: INPUT ends with keyboard Enter only;
+     typed text is echoed live inside the dialog overlay. -->
+<div id="guiHUD" class="unit" style="display:flex;justify-content:center;gap:4px">
+<button id="guiInteractBtn" class="unit" style="display:none" onclick="BLACK.GUI.INTERACT()">[E] INTERACT</button>
+</div>
 <div class="unit row" style="border-color:#99F"><button class="unit" onclick="BLACK.GUI.CLEAR()">CLEAR</button></div>
 </div>
 <div id="GRAPHIC" class="unit panel" style="display:none">
-<h3>GRAPHIC</h3>
-<div class="unit row" style="border-color:#99F">
-<button class="unit" onclick="BLACK.GRAPHIC.PAGE('PALETTE')">PALETTE</button>
-<button class="unit" onclick="BLACK.GRAPHIC.PAGE('SPRITE')">SPRITE</button>
-<button class="unit" onclick="BLACK.GRAPHIC.PAGE('MAP')">MAP</button>
-<button class="unit" onclick="BLACK.GRAPHIC.PAGE('MOVIE')">MOVIE</button>
+<h4>GRAPHIC</h4>
+<div id="navGRAPHIC" class="unit row" style="border-color:#99F">
+<button class="unit" data-tab="PALETTE" onclick="BLACK.GRAPHIC.PAGE('PALETTE')">PALETTE</button>
+<button class="unit" data-tab="SPRITE" onclick="BLACK.GRAPHIC.PAGE('SPRITE')">SPRITE</button>
+<button class="unit" data-tab="MAP" onclick="BLACK.GRAPHIC.PAGE('MAP')">MAP</button>
+<button class="unit" data-tab="MOVIE" onclick="BLACK.GRAPHIC.PAGE('MOVIE')">MOVIE</button>
 </div>
 <div id="GRAPHIC_PALETTE" class="unit panel" style="display:none;border-color:#99F">
 <div class="unit row" style="border-color:#66F">
@@ -179,6 +293,7 @@ PRINT LEFT$("BLACKMAGIC",5), LEN("ABC")</textarea>
 <label>SPRITE: </label><select id="gfxSpriteList" class="unit" onchange="BLACK.GRAPHIC.SELECT()"></select>
 <label>SIZE: </label><select id="gfxSize" class="unit"><option value="8">8x8</option><option value="16" selected>16x16</option><option value="32">32x32</option><option value="64">64x64</option></select>
 <button class="unit" onclick="BLACK.GRAPHIC.NEW()">NEW</button>
+<button class="unit" id="gfxFillBtn" onclick="BLACK.GRAPHIC.TOGGLE_FILL()">FILL</button>
 </div>
 <div id="gfxPalettePick"></div>
 <div id="gfxTable"></div>
@@ -187,6 +302,7 @@ PRINT LEFT$("BLACKMAGIC",5), LEN("ABC")</textarea>
 <div class="unit row" style="border-color:#66F">
 <label>SIZE: </label><select id="mapSize" class="unit" onchange="BLACK.GRAPHIC.MAP.RESIZE()"><option value="16">16x16</option><option value="32">32x32</option><option value="64">64x64</option></select>
 <label>BRUSH: </label><select id="mapBrush" class="unit"></select>
+<button class="unit" id="mapFillBtn" onclick="BLACK.GRAPHIC.MAP.TOGGLE_FILL()">FILL</button>
 <label>FLOOR: </label><select id="mapFloor" class="unit" onchange="BLACK.GRAPHIC.MAP.SETFLOOR()"></select>
 <label>CEIL: </label><select id="mapCeil" class="unit" onchange="BLACK.GRAPHIC.MAP.SETCEIL()"></select>
 </div>
@@ -217,17 +333,18 @@ PRINT LEFT$("BLACKMAGIC",5), LEN("ABC")</textarea>
 
 <div id="SOUND" class="unit panel" style="display:none">
 <h4>SOUND</h4>
-<div class="unit row" style="border-color:#99F">
-<button class="unit" onclick="BLACK.SOUND.PAGE('WAVE')">WAVE</button>
-<button class="unit" onclick="BLACK.SOUND.PAGE('NOTE')">NOTE</button>
-<button class="unit" onclick="BLACK.SOUND.PAGE('TRACK')">TRACK</button>
-<button class="unit" onclick="BLACK.SOUND.PAGE('MASTER')">MASTER</button>
+<div id="navSOUND" class="unit row" style="border-color:#99F">
+<button class="unit" data-tab="WAVE" onclick="BLACK.SOUND.PAGE('WAVE')">WAVE</button>
+<button class="unit" data-tab="NOTE" onclick="BLACK.SOUND.PAGE('NOTE')">NOTE</button>
+<button class="unit" data-tab="TRACK" onclick="BLACK.SOUND.PAGE('TRACK')">TRACK</button>
+<button class="unit" data-tab="MASTER" onclick="BLACK.SOUND.PAGE('MASTER')">MASTER</button>
 </div>
 <div id="SOUND_WAVE" class="unit panel" style="display:none;border-color:#99F">
 <div class="unit row" style="border-color:#66F">
 <label>WAVE: </label><select id="waveList" class="unit" onchange="BLACK.SOUND.WAVE.SELECT()"></select>
 <button class="unit" onclick="BLACK.SOUND.WAVE.NEW()">NEW</button>
 <button class="unit" onclick="BLACK.SOUND.WAVE.PLAY()">PLAY</button>
+<button class="unit" onclick="BLACK.SOUND.WAVE.STOP()">STOP</button>
 </div>
 <div class="unit row" style="border-color:#66F">
 <label>OSC1: </label><select id="waveOsc1" class="unit" onchange="BLACK.SOUND.WAVE.UPDATE()">
@@ -245,8 +362,8 @@ PRINT LEFT$("BLACKMAGIC",5), LEN("ABC")</textarea>
 <label>FILTER: </label><select id="waveFilter" class="unit" onchange="BLACK.SOUND.WAVE.UPDATE()">
 <option value="none">NONE</option><option value="low">LOW</option><option value="high">HIGH</option><option value="band">BAND</option>
 </select>
-<label>CUTOFF: </label><input type="range" id="waveCutoff" min="100" max="8000" value="1000" oninput="BLACK.SOUND.WAVE.UPDATE()">
-<label>Q: </label><input type="range" id="waveQ" min="1" max="200" value="10" oninput="BLACK.SOUND.WAVE.UPDATE()">
+<label>CUTOFF: </label><input type="range" id="waveCutoff" min="0" max="1000" value="500" oninput="BLACK.SOUND.WAVE.UPDATE()">
+<label>Q: </label><input type="range" id="waveQ" min="0" max="1000" value="500" oninput="BLACK.SOUND.WAVE.UPDATE()">
 </div>
 <div class="unit row" style="border-color:#66F">
 <label style="display:block;margin-bottom:4px">FILTER RESPONSE — drag to edit CUTOFF (horiz) / Q (vert)</label>
@@ -350,6 +467,17 @@ No server module connected.</pre>
 <input id="username" class="unit" type="text" value="">
 </div>
 </div>
+<div id="PROJECT" class="unit panel" style="display:none">
+<h4>PROJECT</h4>
+<div>Bundles GRAPHIC (palette/sprites/map/movie) + SOUND (waves/notes/tracks/master) + the CUI program into one JSON blob, so the whole app can be saved, shared, and reloaded as a single integrated project.</div>
+<div class="unit row" style="border-color:#99F">
+<button class="unit" onclick="BLACK.SYS.PROJECT.EXPORT()">EXPORT</button>
+<button class="unit" onclick="BLACK.SYS.PROJECT.IMPORT()">IMPORT</button>
+<button class="unit" onclick="BLACK.SYS.PROJECT.LOAD_SAMPLE()">LOAD SAMPLE</button>
+</div>
+<textarea id="projectText" class="unit" cols="80" rows="12" placeholder="Click EXPORT to dump the current project as JSON here, or paste a saved project JSON and click IMPORT."></textarea>
+<pre id="projectOut" class="unit">READY</pre>
+</div>
 <script id="script-core">
 // CORE: shared namespace object populated by the feature scripts below
 const BLACK={};
@@ -357,12 +485,34 @@ const BLACK={};
 <script id="script-sys">
 // SYS: boot sequence and top-level page/mode switching
 BLACK.SYS={
-	UI:['CUI','GUI','GRAPHIC','SOUND','SERVER','USER'],
+	UI:['CUI','GUI','GRAPHIC','SOUND','SERVER','USER','PROJECT'],
+	// Shared status-text helper: 'err'/'ok' marker classes carry no CSS rule by design (see
+	// ai-instructions #4), so color feedback is applied as an explicit inline style here instead
+	// of adding new CSS classes/rules. state: 'ok' | 'err' | undefined (neutral).
+	STATUS(el,text,state){
+		if(!el) return;
+		el.textContent=text;
+		el.style.color = state==='ok' ? '#8f8' : state==='err' ? '#f88' : '#ccf';
+	},
+	// Highlights the button whose data-tab matches `name` among the direct children of the
+	// container (id=navId). Previously no tab (top-level or GRAPHIC/SOUND sub-pages) showed which
+	// one was active; this makes the current selection visible without adding new CSS rules.
+	HIGHLIGHT(navId,name){
+		const nav=document.getElementById(navId);
+		if(!nav) return;
+		for(const b of nav.children){
+			const active=b.dataset&&b.dataset.tab===name;
+			b.style.background=active?'#225':'';
+			b.style.borderColor=active?'#ccf':'';
+		}
+	},
 	ON(name){
 		for(const id of this.UI){const el=document.getElementById(id);if(el)el.style.display=(id===name)?'block':'none';}
+		this.HIGHLIGHT('navUI',name);
 		if(name==='GUI'){BLACK.GUI.START();}else{BLACK.GUI.STOP();}
 		if(name==='GRAPHIC') BLACK.GRAPHIC.PAGE(BLACK.GRAPHIC.curPage);
 		if(name==='SOUND') BLACK.SOUND.PAGE(BLACK.SOUND.curPage);
+		if(name==='PROJECT') BLACK.SYS.PROJECT.EXPORT();
 	},
 	INIT(){
 		const n=Math.floor(Math.random()*0x1000000).toString(36).toUpperCase().padStart(5,'0');
@@ -373,7 +523,288 @@ BLACK.SYS={
 		if(sel) sel.addEventListener('change',()=>BLACK.SERVER.LOG());
 		BLACK.GRAPHIC.INIT();
 		BLACK.SOUND.INIT();
+		this.PROJECT.APPLY(this.PROJECT.SAMPLE());
 		this.ON('CUI');
+	},
+	PROJECT:{
+		GATHER(){
+			const G=BLACK.GRAPHIC, S=BLACK.SOUND;
+			return {
+				version:1,
+				cui:document.getElementById('code').value,
+				graphic:{
+					palette:G.PALETTE,
+					sprites:G.SPRITES,
+					map:{size:G.MAP.SIZE,data:G.MAP.DATA,floorIdx:G.MAP.floorIdx,ceilIdx:G.MAP.ceilIdx},
+					movie:G.MOVIE.LIST
+				},
+				sound:{
+					waves:S.WAVE.LIST,
+					notes:S.NOTE.LIST,
+					tracks:S.TRACK.LIST,
+					master:{bpm:S.MASTER.bpm,vol:S.MASTER.vol}
+				}
+			};
+		},
+		APPLY(data){
+			if(!data) return;
+			if(data.cui!=null){
+				const code=document.getElementById('code');
+				if(code) code.value=data.cui;
+			}
+			const G=BLACK.GRAPHIC, S=BLACK.SOUND;
+			if(data.graphic){
+				G.PALETTE = (data.graphic.palette&&data.graphic.palette.length)?data.graphic.palette:[''];
+				G.SPRITES = data.graphic.sprites||[];
+				G.curSprite = G.SPRITES.length?0:-1;
+				G.curColor = 0;
+				const m=data.graphic.map;
+				if(m){
+					G.MAP.SIZE=m.size||16;
+					G.MAP.DATA=m.data||new Array(G.MAP.SIZE*G.MAP.SIZE).fill(-1);
+					G.MAP.floorIdx=(m.floorIdx!=null)?m.floorIdx:-1;
+					G.MAP.ceilIdx=(m.ceilIdx!=null)?m.ceilIdx:-1;
+					const sizeSel=document.getElementById('mapSize');
+					if(sizeSel) sizeSel.value=G.MAP.SIZE;
+				}
+				G.MOVIE.LIST = (data.graphic.movie&&data.graphic.movie.length)?data.graphic.movie:[G.MOVIE.DEFAULT()];
+				G.MOVIE.cur=0;
+				G.MOVIE.curFrame=0;
+				G.REFRESH();
+				G.MAP.REFRESH();
+				G.MOVIE.REFRESH();
+			}
+			if(data.sound){
+				S.WAVE.LIST = (data.sound.waves&&data.sound.waves.length)?data.sound.waves:[S.WAVE.DEFAULT()];
+				S.WAVE.cur=0;
+				S.NOTE.LIST = (data.sound.notes&&data.sound.notes.length)?data.sound.notes:[S.NOTE.DEFAULT(16)];
+				S.NOTE.cur=0;
+				S.NOTE.curStep=0;
+				S.TRACK.LIST = (data.sound.tracks&&data.sound.tracks.length)?data.sound.tracks:[S.TRACK.DEFAULT()];
+				S.TRACK.cur=0;
+				if(data.sound.master){
+					S.MASTER.bpm=data.sound.master.bpm||120;
+					S.MASTER.vol=(data.sound.master.vol!=null)?data.sound.master.vol:0.8;
+				}
+				S.WAVE.REFRESH();
+				S.NOTE.REFRESH();
+				S.TRACK.REFRESH();
+				S.MASTER.REFRESH();
+			}
+		},
+		EXPORT(){
+			const t=document.getElementById('projectText');
+			const out=document.getElementById('projectOut');
+			try{
+				const json=JSON.stringify(this.GATHER(),null,1);
+				if(t) t.value=json;
+				BLACK.SYS.STATUS(out,'EXPORTED '+json.length+' chars','ok');
+			}catch(e){
+				BLACK.SYS.STATUS(out,'EXPORT ERROR\n'+e.message,'err');
+			}
+		},
+		IMPORT(){
+			const t=document.getElementById('projectText');
+			const out=document.getElementById('projectOut');
+			try{
+				const data=JSON.parse(t.value);
+				this.APPLY(data);
+				BLACK.SYS.STATUS(out,'IMPORTED OK','ok');
+			}catch(e){
+				BLACK.SYS.STATUS(out,'IMPORT ERROR\n'+e.message,'err');
+			}
+		},
+		buildBrick(size,c1,c2){
+			const px=new Array(size*size);
+			const band=Math.max(1,Math.floor(size/4));
+			for(let y=0;y<size;y++){
+				const off=(Math.floor(y/2)%2)*band;
+				for(let x=0;x<size;x++){
+					px[y*size+x] = (Math.floor((x+off)/band)%2===0) ? c1 : c2;
+				}
+			}
+			return px;
+		},
+		SAMPLE(){
+			const size=8;
+			// VAULT ESCAPE tutorial game palette: [transparent, brick light, brick dark, floor gray,
+			// ceiling navy, door gold]. Sprite indices below reference these by position.
+			const palette=['','#8b3a2a','#5a2a1a','#666666','#1a1a33','#c9a227'];
+			const sprites=[
+				{size,pixels:this.buildBrick(size,palette[1],palette[2])}, // 0: brick wall
+				{size,pixels:new Array(size*size).fill(palette[3])},      // 1: floor
+				{size,pixels:new Array(size*size).fill(palette[4])},      // 2: ceiling
+				{size,pixels:new Array(size*size).fill(palette[5])}       // 3: vault door (locked)
+			];
+			// MAP: a 16x16 vault split into two chambers by an interior wall at x=8, with a single
+			// locked-door gap (sprite 3) at (8,8). The CUI tutorial game opens it via
+			// SETTILE 8, 8, -1 once all four trials are solved, matching how open floor cells are
+			// already encoded as -1 (see MAP.isWall).
+			const mapSize=16;
+			const mapData=new Array(mapSize*mapSize).fill(-1);
+			for(let x=0;x<mapSize;x++){mapData[x]=0;mapData[(mapSize-1)*mapSize+x]=0;}
+			for(let y=0;y<mapSize;y++){mapData[y*mapSize]=0;mapData[y*mapSize+mapSize-1]=0;}
+			for(let y=1;y<mapSize-1;y++){mapData[y*mapSize+8]= (y===8) ? 3 : 0;}
+			// VAULT ESCAPE tutorial game sound bank: three wave/note/track triples for the three
+			// gameplay cues the CUI script and the GUI door-interact both play via SNDPLAYNOTE:
+			//  0 = correct-answer chime (existing ascending triangle+square arpeggio)
+			//  1 = wrong-answer buzz (short low square blip)
+			//  2 = victory fanfare (brighter square+triangle run, played when the door opens)
+			const wave0={osc1:'triangle',use2:false,osc2:'square',combine:'add',filter:'low',cutoff:1800,q:6,a:5,d:120,s:0.4,r:180};
+			const wave1={osc1:'square',use2:false,osc2:'square',combine:'add',filter:'low',cutoff:500,q:3,a:1,d:90,s:0,r:60};
+			const wave2={osc1:'square',use2:true,osc2:'triangle',combine:'add',filter:'low',cutoff:4000,q:4,a:2,d:140,s:0.5,r:220};
+			const note0={steps:[
+				{note:0,octave:4},null,{note:4,octave:4},null,{note:7,octave:4},null,{note:0,octave:5},null
+			],stepsPerBar:8};
+			const note1={steps:[{note:9,octave:2}],stepsPerBar:4};
+			const note2={steps:[
+				{note:0,octave:4},{note:4,octave:4},{note:7,octave:4},{note:0,octave:5},
+				{note:4,octave:5},{note:7,octave:5},{note:0,octave:6},null
+			],stepsPerBar:8};
+			const track0={wave:0,note:0,vol:1,pan:0};
+			const track1={wave:1,note:1,vol:0.9,pan:0};
+			const track2={wave:2,note:2,vol:1,pan:0};
+			const cui=[
+				'REM ==== VAULT ESCAPE: a BLACKMAGIC BASIC tutorial ====',
+				'REM Solve four short trials to unlock the vault door, then',
+				'REM open the GUI tab, walk up to the door and press E (or',
+				'REM tap it) to swing it open and walk free.',
+				'',
+				'REM --- GRAPHIC bridge commands reference assets already ---',
+				'REM --- authored on the GRAPHIC pages, by index only.    ---',
+				'SETFLOOR 1',
+				'SETCEIL 2',
+				'TELEPORT 4.5, 8.5, 0',
+				'PLAYMOVIE 0',
+				'',
+				'REM --- SOUND bridge: load three cues (correct/wrong/win) ---',
+				'LET MML$ = "MASTER BPM=140 VOL=80\\nWAVE 0 OSC1=TRIANGLE USE2=0 OSC2=SQUARE COMBINE=ADD FILTER=LOW CUTOFF=1800 Q=6 A=5 D=120 S=40 R=180\\nWAVE 1 OSC1=SQUARE USE2=0 OSC2=SQUARE COMBINE=ADD FILTER=LOW CUTOFF=500 Q=3 A=1 D=90 S=0 R=60\\nWAVE 2 OSC1=SQUARE USE2=1 OSC2=TRIANGLE COMBINE=ADD FILTER=LOW CUTOFF=4000 Q=4 A=2 D=140 S=50 R=220\\nNOTE 0 STEPS=8 BAR=8 DATA=C4,,E4,,G4,,C5,\\nNOTE 1 STEPS=1 BAR=4 DATA=A2\\nNOTE 2 STEPS=8 BAR=8 DATA=C4,E4,G4,C5,E5,G5,C6,\\nTRACK 0 WAVE=0 NOTE=0 VOL=100 PAN=0\\nTRACK 1 WAVE=1 NOTE=1 VOL=90 PAN=0\\nTRACK 2 WAVE=2 NOTE=2 VOL=100 PAN=0"',
+				'SNDLOAD "vault", MML$',
+				'',
+				'PRINT "You wake up in a stone vault. A locked gold door blocks"',
+				'PRINT "the only way out. Four trials stand between you and"',
+				'PRINT "freedom - each one teaches a piece of BASIC."',
+				'PRINT ""',
+				'',
+				'REM ===== Trial 1: LET + PRINT + arithmetic =====',
+				'PRINT "TRIAL 1 - THE LOCK CODE"',
+				'PRINT "A LET statement just computed CODE = 3 * 7 + 1."',
+				'PRINT "PRINT shows you the answer below - type it back to me."',
+				'LET CODE = 3 * 7 + 1',
+				'PRINT CODE',
+				'WHILE 1',
+				'INPUT A1',
+				'IF A1 = CODE THEN',
+				'PRINT "Correct! The first bolt slides open."',
+				'SNDPLAYNOTE "vault", 0, 0',
+				'BREAK',
+				'ELSE',
+				'PRINT "Not quite - the number PRINT just showed you IS the code."',
+				'SNDPLAYNOTE "vault", 1, 1',
+				'ENDIF',
+				'WEND',
+				'PRINT ""',
+				'',
+				'REM ===== Trial 2: IF/THEN/ELSE + string compare =====',
+				'PRINT "TRIAL 2 - THE RIDDLE"',
+				'PRINT "I have keys but no locks, space but no room, you can"',
+				'PRINT "enter but not go outside. What am I? (one word, all caps)"',
+				'WHILE 1',
+				'INPUT A2$',
+				'IF A2$ = "KEYBOARD" THEN',
+				'PRINT "Correct! The second bolt slides open."',
+				'SNDPLAYNOTE "vault", 0, 0',
+				'BREAK',
+				'ELSE',
+				'PRINT "Not quite - think about what you type on. Answer: KEYBOARD"',
+				'SNDPLAYNOTE "vault", 1, 1',
+				'ENDIF',
+				'WEND',
+				'PRINT ""',
+				'',
+				'REM ===== Trial 3: FOR/NEXT accumulation =====',
+				'PRINT "TRIAL 3 - THE FIVE TORCHES"',
+				'PRINT "A FOR loop is about to add up the torches on the wall,"',
+				'PRINT "one by one, into a running TOTAL."',
+				'LET TOTAL = 0',
+				'FOR I = 1 TO 5',
+				'LET TOTAL = TOTAL + I',
+				'NEXT',
+				'PRINT "It just computed 1+2+3+4+5. What did it get?"',
+				'WHILE 1',
+				'INPUT A3',
+				'IF A3 = TOTAL THEN',
+				'PRINT "Correct! The third bolt slides open."',
+				'SNDPLAYNOTE "vault", 0, 0',
+				'BREAK',
+				'ELSE',
+				'PRINT "Not quite - add 1+2+3+4+5 yourself and try again."',
+				'SNDPLAYNOTE "vault", 1, 1',
+				'ENDIF',
+				'WEND',
+				'PRINT ""',
+				'',
+				'REM ===== Trial 4: DIM (string array) + SUB with a parameter =====',
+				'DIM LETTER$(4)',
+				'LET LETTER$(0) = "E"',
+				'LET LETTER$(1) = "X"',
+				'LET LETTER$(2) = "I"',
+				'LET LETTER$(3) = "T"',
+				'SUB REVEAL(N)',
+				'PRINT "Letter " + STR$(N + 1) + ": " + LETTER$(N)',
+				'ENDSUB',
+				'PRINT "TRIAL 4 - THE FINAL WORD"',
+				'PRINT "A SUB called REVEAL prints one letter per call. A FOR"',
+				'PRINT "loop is calling it four times, once per array slot:"',
+				'FOR I = 0 TO 3',
+				'REVEAL I',
+				'NEXT',
+				'PRINT "Type the word those four letters spell (all caps)."',
+				'WHILE 1',
+				'INPUT A4$',
+				'IF A4$ = "EXIT" THEN',
+				'PRINT "Correct! The final bolt slides open."',
+				'SNDPLAYNOTE "vault", 0, 0',
+				'BREAK',
+				'ELSE',
+				'PRINT "Not quite - read the letters REVEAL printed, in order."',
+				'SNDPLAYNOTE "vault", 1, 1',
+				'ENDIF',
+				'WEND',
+				'PRINT ""',
+				'',
+				'REM ===== Victory: unlock the door for the GUI interact system =====',
+				'SETDOORKEY 1',
+				'SNDPLAYNOTE "vault", 2, 2',
+				'PRINT "All four bolts are open! The vault door is unlocked."',
+				'PRINT "Open the GUI tab, walk up to the gold door, and press"',
+				'PRINT "E (or tap the on-screen button) to swing it open."'
+			].join('\n');
+			return {
+				version:1,
+				cui,
+				graphic:{
+					palette,
+					sprites,
+					map:{size:mapSize,data:mapData,floorIdx:1,ceilIdx:2},
+					movie:[{frames:[0,3,0,3],frameTime:400}]
+				},
+				sound:{
+					waves:[wave0,wave1,wave2],
+					notes:[note0,note1,note2],
+					tracks:[track0,track1,track2],
+					master:{bpm:140,vol:0.8}
+				}
+			};
+		},
+		LOAD_SAMPLE(){
+			const sample=this.SAMPLE();
+			this.APPLY(sample);
+			const t=document.getElementById('projectText');
+			if(t) t.value=JSON.stringify(sample,null,1);
+			const out=document.getElementById('projectOut');
+			BLACK.SYS.STATUS(out,'VAULT ESCAPE sample loaded\nOpen CUI and press RUN to play the tutorial (solve 4 trials).\nThen open GUI, walk to the gold door and press E to open it.','ok');
+		}
 	}
 };
 </script>
@@ -381,22 +812,245 @@ BLACK.SYS={
 // GUI: raycasting mini first-person view (WASD/turn) renderer
 BLACK.GUI={
 	player:{x:1.5,y:1.5,ang:0},
+	// keys is intentionally the single source of truth for "is this key currently held" for both
+	// keyboard input and (formerly) touch pads. Every place that can *stop* seeing keyup events for
+	// a key that's currently down (entering inputMode/messageMode, leaving the GUI tab, the window
+	// losing focus, or restarting the loop on RUN) must reset this object to {} -- otherwise a key
+	// can get permanently "stuck" true and the player drifts/turns forever with nothing held down.
 	keys:{},
 	raf:null,
 	active:false,
 	_bound:false,
-	CLEAR(){const c=document.getElementById('screen'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);},
+	// Door interact state: doorUnlocked is set by the CUI SETDOORKEY bridge command once the
+	// tutorial game's quiz is solved. DOOR_SPRITE is the GRAPHIC sprite index used for locked
+	// vault doors (see PROJECT.SAMPLE's sprites[3]). nearDoor tracks the map cell (if any) within
+	// interact range this frame, refreshed every UPDATE() tick.
+	doorUnlocked:false,
+	DOOR_SPRITE:3,
+	INTERACT_RANGE:1.5,
+	nearDoor:null,
+	// In-GUI dialog state: dialogLines holds whatever is currently shown in the centered overlay
+	// (PRINT scrollback, an INPUT prompt, or a DIALOG message -- see LOG/INPUT_ASYNC/DIALOG_ASYNC).
+	// inputMode is "waiting for typed text" (INPUT_STMT); messageMode is "waiting for an
+	// acknowledge keypress/tap" (DIALOG_STMT and the door INTERACT feedback). The two are mutually
+	// exclusive and both pause WASD movement (see UPDATE) while active. cursorOn/cursorTimer drive
+	// the live-echo INPUT overlay's blinking underscore cursor.
+	dialogLines:[],
+	inputMode:false,
+	messageMode:false,
+	currentPrompt:'',
+	// Live typed text for INPUT; shown in the dialog overlay and submitted on Enter.
+	// Kept in sync with guiHiddenInput so both desktop keydown and mobile on-screen keyboard work.
+	inputBuffer:'',
+	cursorOn:true,
+	cursorTimer:null,
+	_inputResolve:null,
+	_messageResolve:null,
+	// Programmatic setter for the SETDOORKEY CUI bridge command.
+	SETDOORKEY(v){this.doorUnlocked=!!v;},
+	CLEAR(){const c=document.getElementById('screen'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);this.CLEARLOG();},
+	// PRINT bridge target (called from BLACK.CUI.PRINT) so game text shows up inside the GUI
+	// dialog overlay instead of only on the CUI tab's #out panel.
+	LOG(text){
+		String(text).split('\n').forEach(line=>this.dialogLines.push(line));
+		if(this.dialogLines.length>6) this.dialogLines=this.dialogLines.slice(-6);
+		this.RENDER_DIALOG();
+	},
+	CLEARLOG(){
+		this.dialogLines=[];
+		this.RENDER_DIALOG();
+	},
+	// Renders the scrollback plus, while inputMode is active, the current prompt + inputBuffer
+	// (live key echo) + a blinking underscore cursor. The overlay box itself is only shown
+	// (display:block) while there's actually something to show, so it doesn't sit over the
+	// canvas the rest of the time. No ENTER button: submit is keyboard Enter only.
+	RENDER_DIALOG(){
+		const span=document.getElementById('guiDialogText');
+		const box=document.getElementById('guiDialog');
+		const hint=document.getElementById('guiDialogKeyHint');
+		if(!span||!box) return;
+		let text=this.dialogLines.join('\n');
+		if(this.inputMode){
+			text += (text?'\n':'') + this.currentPrompt+' '+this.inputBuffer+(this.cursorOn?'_':' ');
+		}
+		span.textContent=text;
+		if(hint) hint.textContent = this.inputMode ? '[ENTER] to submit' : this.messageMode ? '[E] to continue' : '';
+		box.style.display = (text || this.messageMode) ? 'block' : 'none';
+		box.scrollTop=box.scrollHeight;
+	},
+	// Toggles cursorOn every 500ms; only re-renders while an INPUT is actually pending so the
+	// blink is visible only when input is being accepted.
+	START_CURSOR_BLINK(){
+		if(this.cursorTimer) return;
+		this.cursorOn=true;
+		this.cursorTimer=setInterval(()=>{
+			this.cursorOn=!this.cursorOn;
+			if(this.inputMode) this.RENDER_DIALOG();
+		},500);
+	},
+	// Tapping the dialog box focuses the hidden input, which is how mobile browsers are
+	// coaxed into popping up their on-screen keyboard.
+	FOCUS_INPUT(){
+		if(!this.inputMode) return;
+		const field=document.getElementById('guiHiddenInput');
+		if(field) field.focus();
+	},
+	// Hidden input's oninput: sync buffer from the field (mobile/on-screen keyboard path) and
+	// re-render so typed text echoes live inside the dialog.
+	_ECHO_INPUT(){
+		if(!this.inputMode) return;
+		const field=document.getElementById('guiHiddenInput');
+		if(field) this.inputBuffer=field.value;
+		this.RENDER_DIALOG();
+	},
+	// Hidden input keydown: Enter submits; other keys are handled via oninput for mobile, and
+	// also via the document keydown path for desktop when the field is not focused.
+	_HIDDEN_KEYDOWN(e){
+		if(!this.inputMode) return;
+		if(e.key==='Enter'){
+			e.preventDefault();
+			this._SUBMIT_INPUT();
+		}
+	},
+	// Desktop key path while inputMode: append printable chars / Backspace into inputBuffer,
+	// keep guiHiddenInput in sync, and submit on Enter. Called from document keydown so typing
+	// works even if the hidden field lost focus.
+	_HANDLE_INPUT_KEY(e){
+		if(!this.inputMode) return false;
+		if(e.key==='Enter'){
+			e.preventDefault();
+			this._SUBMIT_INPUT();
+			return true;
+		}
+		if(e.key==='Backspace'){
+			e.preventDefault();
+			this.inputBuffer=this.inputBuffer.slice(0,-1);
+			const field=document.getElementById('guiHiddenInput');
+			if(field) field.value=this.inputBuffer;
+			this.RENDER_DIALOG();
+			return true;
+		}
+		// Single printable character (letters, digits, space, punctuation). Ignore modifiers.
+		if(e.key.length===1 && !e.ctrlKey && !e.metaKey && !e.altKey){
+			e.preventDefault();
+			this.inputBuffer+=e.key;
+			const field=document.getElementById('guiHiddenInput');
+			if(field) field.value=this.inputBuffer;
+			this.RENDER_DIALOG();
+			return true;
+		}
+		return false;
+	},
+	// INPUT_STMT compiles to "await BLACK.GUI.INPUT_ASYNC(...)" (see MAGIC.registerCommand
+	// ('INPUT', ...)); the returned Promise resolves once the player presses Enter, so the whole
+	// trial/quiz flow stays inside the GUI dialog. Typed characters appear live in the overlay;
+	// there is no ENTER HUD button.
+	INPUT_ASYNC(promptText){
+		return new Promise(resolve=>{
+			this.inputMode=true;
+			this.keys={};
+			this.currentPrompt=promptText;
+			this.inputBuffer='';
+			this.cursorOn=true;
+			const field=document.getElementById('guiHiddenInput');
+			const interactBtn=document.getElementById('guiInteractBtn');
+			if(field) field.value='';
+			if(interactBtn) interactBtn.style.display='none';
+			if(field) field.focus();
+			this.RENDER_DIALOG();
+			this._inputResolve=resolve;
+		});
+	},
+	// Shared submit path for Enter (hardware keyboard or mobile keyboard "Go/Done").
+	_SUBMIT_INPUT(){
+		if(!this.inputMode) return;
+		const field=document.getElementById('guiHiddenInput');
+		const value=this.inputBuffer!==undefined?this.inputBuffer:(field?field.value:'');
+		this.inputMode=false;
+		this.keys={};
+		this.inputBuffer='';
+		if(field) field.value='';
+		this.LOG(this.currentPrompt+' '+value);
+		this.currentPrompt='';
+		this.updateInteractUI();
+		const resolve=this._inputResolve;
+		this._inputResolve=null;
+		if(resolve) resolve(value);
+	},
+	// DIALOG_STMT compiles to "await BLACK.GUI.DIALOG_ASYNC(...)" (see MAGIC.registerCommand
+	// ('DIALOG', ...)). Unlike INPUT_ASYNC this collects no text: it replaces the overlay with the
+	// given message, pauses movement, and waits for an acknowledge (E/Enter, tap on the dialog box,
+	// or the [E] CONTINUE HUD button -- see DISMISS_DIALOG) before the script resumes. Also used
+	// directly (not awaited) by INTERACT() below for the gold door's open/locked feedback, which is
+	// the "press E, see a centered DIALOG message" path the door uses.
+	DIALOG_ASYNC(text){
+		return new Promise(resolve=>{
+			this.messageMode=true;
+			this.keys={};
+			this.dialogLines=String(text).split('\n');
+			const interactBtn=document.getElementById('guiInteractBtn');
+			if(interactBtn){interactBtn.textContent='[E] CONTINUE';interactBtn.style.display='block';}
+			this.RENDER_DIALOG();
+			this._messageResolve=resolve;
+		});
+	},
+	// Dismiss path for a DIALOG_ASYNC message box, shared by keyboard ('E'/Enter, via INTERACT())
+	// and the [E] CONTINUE HUD button / tapping the dialog box.
+	DISMISS_DIALOG(){
+		if(!this.messageMode) return;
+		this.messageMode=false;
+		this.dialogLines=[];
+		this.RENDER_DIALOG();
+		this.updateInteractUI();
+		const resolve=this._messageResolve;
+		this._messageResolve=null;
+		if(resolve) resolve();
+	},
+	// Programmatic mover for the TELEPORT CUI bridge command: places the player, doesn't touch MAP data.
+	TELEPORT(x,y,ang){
+		this.player.x=x;
+		this.player.y=y;
+		if(ang!=null) this.player.ang=ang;
+	},
+	// START (re)activates the GUI loop -- called both when the GUI tab is opened and every time
+	// RUN executes (BLACK.CUI.RUN -> BLACK.SYS.ON('GUI')). It always clears this.keys so a key that
+	// got "stuck" true (its keyup missed because focus moved to the RUN button, a tab switch, or an
+	// INPUT/DIALOG box) can never carry over into the freshly (re)started session. It never touches
+	// this.player, so walking position/facing built up before RUN was pressed is kept exactly as-is;
+	// only a truly held key is dropped, not where the player is standing.
 	START(){
 		this.active=true;
+		this.keys={};
+		this.START_CURSOR_BLINK();
 		if(!this._bound){
-			document.addEventListener('keydown',e=>{this.keys[e.key]=true;});
-			document.addEventListener('keyup',e=>{this.keys[e.key]=false;});
+			document.addEventListener('keydown',e=>{
+				// INPUT mode: route keys into the live dialog buffer / Enter-to-submit path.
+				if(this.inputMode){
+					this._HANDLE_INPUT_KEY(e);
+					return;
+				}
+				const confirm = e.key==='e'||e.key==='E'||e.key==='Enter';
+				if(this.messageMode){
+					if(confirm) this.INTERACT();
+					return;
+				}
+				this.keys[e.key]=true;
+				if(confirm) this.INTERACT();
+			});
+			document.addEventListener('keyup',e=>{
+				if(this.inputMode) return;
+				this.keys[e.key]=false;
+			});
+			// A key held down when focus leaves the page entirely (alt-tab, opening devtools, etc.)
+			// never fires keyup at all, so this is the other place a stuck key could survive.
+			window.addEventListener('blur',()=>{this.keys={};});
 			this._bound=true;
 		}
 		if(!this.raf) this.loop();
 	},
 	STOP(){
 		this.active=false;
+		this.keys={};
 		if(this.raf){cancelAnimationFrame(this.raf);this.raf=null;}
 	},
 	loop(){
@@ -406,6 +1060,7 @@ BLACK.GUI={
 		this.raf=requestAnimationFrame(()=>this.loop());
 	},
 	UPDATE(){
+		if(this.inputMode||this.messageMode) return;
 		const sp=0.06,rs=0.05,map=BLACK.GRAPHIC.MAP,p=this.player;
 		if(this.keys['ArrowLeft']||this.keys['a']||this.keys['A']) p.ang-=rs;
 		if(this.keys['ArrowRight']||this.keys['d']||this.keys['D']) p.ang+=rs;
@@ -414,6 +1069,58 @@ BLACK.GUI={
 		if(this.keys['ArrowDown']||this.keys['s']||this.keys['S']){mx-=Math.cos(p.ang)*sp;my-=Math.sin(p.ang)*sp;}
 		if(!map.isWall(p.x+mx,p.y)) p.x+=mx;
 		if(!map.isWall(p.x,p.y+my)) p.y+=my;
+		this.nearDoor=this.findNearbyDoor();
+		this.updateInteractUI();
+	},
+	// Scans the 3x3 block of MAP cells around the player for a DOOR_SPRITE cell within
+	// INTERACT_RANGE, so INTERACT() (keyboard 'E'/Enter, or the on-screen button) knows whether
+	// there's actually a door to act on and which cell to open.
+	findNearbyDoor(){
+		const map=BLACK.GRAPHIC.MAP,p=this.player;
+		const px=Math.floor(p.x),py=Math.floor(p.y);
+		let best=null,bestDist=this.INTERACT_RANGE;
+		for(let dy=-1;dy<=1;dy++){
+			for(let dx=-1;dx<=1;dx++){
+				const mx=px+dx,my=py+dy;
+				if(mx<0||my<0||mx>=map.SIZE||my>=map.SIZE) continue;
+				if(map.DATA[my*map.SIZE+mx]!==this.DOOR_SPRITE) continue;
+				const dist=Math.hypot(p.x-(mx+0.5),p.y-(my+0.5));
+				if(dist<=bestDist){bestDist=dist;best={x:mx,y:my};}
+			}
+		}
+		return best;
+	},
+	// Shows/hides the on-screen interact button based on nearDoor + lock state. Only runs from
+	// UPDATE(), which is itself skipped during inputMode/messageMode, so it never overwrites the
+	// '[E] CONTINUE' label DIALOG_ASYNC sets while a message box is open.
+	updateInteractUI(){
+		const btn=document.getElementById('guiInteractBtn');
+		if(!btn) return;
+		if(this.nearDoor){
+			btn.style.display='block';
+			btn.textContent = this.doorUnlocked ? '[E] OPEN DOOR' : '[E] EXAMINE DOOR';
+		} else {
+			btn.style.display='none';
+		}
+	},
+	// Interact trigger, shared by keyboard ('E'/Enter) and the on-screen button (click/tap).
+	// If a DIALOG_ASYNC message box is currently open, E/Enter/tap dismiss it instead -- this is
+	// the "press E to continue" affordance DIALOG_STMT relies on. Otherwise, when a door is within
+	// range, it shows the door's own centered DIALOG message: whether it opens depends on
+	// doorUnlocked, which the CUI tutorial script sets via SETDOORKEY once all four trials are solved.
+	INTERACT(){
+		if(this.messageMode){this.DISMISS_DIALOG();return;}
+		if(!this.active||!this.nearDoor) return;
+		const {x,y}=this.nearDoor;
+		if(this.doorUnlocked){
+			BLACK.GRAPHIC.MAP.SET(x,y,-1);
+			this.nearDoor=null;
+			BLACK.SOUND.SNDPLAYNOTE('vault',2,2);
+			this.DIALOG_ASYNC('The vault door swings open.');
+		} else {
+			BLACK.SOUND.SNDPLAYNOTE('vault',1,1);
+			this.DIALOG_ASYNC('Locked. Solve the four trials in CUI first.');
+		}
 	},
 	hexToRGB(hex){
 		if(!hex) return null;
@@ -498,6 +1205,7 @@ BLACK.GRAPHIC={
 	PAGE(name){
 		this.curPage=name;
 		for(const p of this.PAGES){const el=document.getElementById('GRAPHIC_'+p);if(el) el.style.display=(p===name)?'block':'none';}
+		BLACK.SYS.HIGHLIGHT('navGRAPHIC',name);
 		if(name==='PALETTE') this.renderPalette();
 		if(name==='SPRITE') this.REFRESH();
 		if(name==='MAP') this.MAP.REFRESH();
@@ -509,6 +1217,7 @@ BLACK.GRAPHIC={
 		this.MAP.INIT();
 		this.MOVIE.INIT();
 		this.PAGE('PALETTE');
+		window.addEventListener('pointerup',()=>{this.isPainting=false;this.MAP.isPainting=false;});
 	},
 	buildPalette(){
 		this.PALETTE=[''];
@@ -602,24 +1311,59 @@ BLACK.GRAPHIC={
 		if(!host||this.curSprite<0) return;
 		const spr=this.SPRITES[this.curSprite];
 		const cell=Math.max(4,Math.floor(384/spr.size));
-		let t='<table style="border-collapse:collapse">';
+		let t='<table style="border-collapse:collapse;touch-action:none">';
 		for(let y=0;y<spr.size;y++){
 			t+='<tr>';
 			for(let x=0;x<spr.size;x++){
 				const i=y*spr.size+x, col=spr.pixels[i];
 				const bg = col ? col : 'repeating-conic-gradient(#888 0% 25%, #444 0% 50%) 50%/8px 8px';
-				t+='<td onclick="BLACK.GRAPHIC.PAINT('+i+')" style="width:'+cell+'px;height:'+cell+'px;background:'+bg+';border:1px solid #444;padding:0"></td>';
+				t+='<td onpointerdown="BLACK.GRAPHIC.PAINT_START('+i+')" onpointerenter="BLACK.GRAPHIC.PAINT_DRAG('+i+')" style="width:'+cell+'px;height:'+cell+'px;background:'+bg+';border:1px solid #444;padding:0"></td>';
 			}
 			t+='</tr>';
 		}
 		t+='</table>';
 		host.innerHTML=t;
 	},
-	PAINT(i){
+	// Drag-to-paint: mousedown/pointerdown starts a paint stroke, pointerenter over a cell while
+	// the button is held paints it too, so filling a 32x32/64x64 sprite doesn't need one click per
+	// pixel. isPainting is toggled globally via a single pointerup listener bound once in INIT().
+	isPainting:false,
+	fillMode:false,
+	TOGGLE_FILL(){
+		this.fillMode=!this.fillMode;
+		const b=document.getElementById('gfxFillBtn');
+		if(b){b.style.background=this.fillMode?'#225':'';b.style.borderColor=this.fillMode?'#ccf':'';}
+	},
+	PAINT_START(i){this.isPainting=true;this.APPLY_PAINT(i);},
+	PAINT_DRAG(i){if(this.isPainting) this.APPLY_PAINT(i);},
+	PAINT(i){this.APPLY_PAINT(i);},
+	APPLY_PAINT(i){
 		if(this.curSprite<0) return;
 		const spr=this.SPRITES[this.curSprite];
-		spr.pixels[i] = this.curColor===0 ? '' : this.PALETTE[this.curColor];
+		const color = this.curColor===0 ? '' : this.PALETTE[this.curColor];
+		if(this.fillMode){
+			this.floodFill(spr.pixels,spr.size,i,color);
+		} else {
+			spr.pixels[i] = color;
+		}
 		this.buildTable();
+	},
+	// 4-directional flood fill over a flat size*size pixel array; used by SPRITE and MAP bucket fill.
+	floodFill(pixels,size,i,color){
+		const target=pixels[i];
+		if(target===color) return;
+		const stack=[i],visited=new Set();
+		while(stack.length){
+			const idx=stack.pop();
+			if(visited.has(idx)||pixels[idx]!==target) continue;
+			visited.add(idx);
+			pixels[idx]=color;
+			const x=idx%size, y=Math.floor(idx/size);
+			if(x>0) stack.push(idx-1);
+			if(x<size-1) stack.push(idx+1);
+			if(y>0) stack.push(idx-size);
+			if(y<size-1) stack.push(idx+size);
+		}
 	},
 	avgColor(idx){
 		if(idx==null||idx<0) return null;
@@ -640,10 +1384,17 @@ BLACK.GRAPHIC.MAP={
 	DATA:[],
 	floorIdx:-1,
 	ceilIdx:-1,
-	INIT(){this.RESIZE();},
-	RESIZE(){
+	INIT(){this.RESIZE(true);},
+	RESIZE(skipConfirm){
 		const sel=document.getElementById('mapSize');
-		this.SIZE = sel? parseInt(sel.value):16;
+		const newSize = sel? parseInt(sel.value):16;
+		if(!skipConfirm && this.DATA.length && newSize!==this.SIZE){
+			if(!confirm('Changing MAP SIZE clears the current map. Continue?')){
+				sel.value=this.SIZE;
+				return;
+			}
+		}
+		this.SIZE = newSize;
 		this.DATA = new Array(this.SIZE*this.SIZE).fill(-1);
 		for(let x=0;x<this.SIZE;x++){this.DATA[x]=0;this.DATA[(this.SIZE-1)*this.SIZE+x]=0;}
 		for(let y=0;y<this.SIZE;y++){this.DATA[y*this.SIZE]=0;this.DATA[y*this.SIZE+this.SIZE-1]=0;}
@@ -667,27 +1418,60 @@ BLACK.GRAPHIC.MAP={
 		const host=document.getElementById('mapTable');
 		if(!host) return;
 		const cell=Math.max(4,Math.floor(384/this.SIZE));
-		let t='<table style="border-collapse:collapse">';
+		let t='<table style="border-collapse:collapse;touch-action:none">';
 		for(let y=0;y<this.SIZE;y++){
 			t+='<tr>';
 			for(let x=0;x<this.SIZE;x++){
 				const i=y*this.SIZE+x, v=this.DATA[i], c=BLACK.GRAPHIC.avgColor(v)||'#000';
-				t+='<td onclick="BLACK.GRAPHIC.MAP.PAINT('+i+')" style="width:'+cell+'px;height:'+cell+'px;background:'+c+';border:1px solid #444;padding:0"></td>';
+				t+='<td onpointerdown="BLACK.GRAPHIC.MAP.PAINT_START('+i+')" onpointerenter="BLACK.GRAPHIC.MAP.PAINT_DRAG('+i+')" style="width:'+cell+'px;height:'+cell+'px;background:'+c+';border:1px solid #444;padding:0"></td>';
 			}
 			t+='</tr>';
 		}
 		t+='</table>';
 		host.innerHTML=t;
 	},
-	PAINT(i){
+	isPainting:false,
+	fillMode:false,
+	TOGGLE_FILL(){
+		this.fillMode=!this.fillMode;
+		const b=document.getElementById('mapFillBtn');
+		if(b){b.style.background=this.fillMode?'#225':'';b.style.borderColor=this.fillMode?'#ccf':'';}
+	},
+	PAINT_START(i){this.isPainting=true;this.APPLY_PAINT(i);},
+	PAINT_DRAG(i){if(this.isPainting) this.APPLY_PAINT(i);},
+	PAINT(i){this.APPLY_PAINT(i);},
+	APPLY_PAINT(i){
 		const brush=document.getElementById('mapBrush');
 		if(!brush) return;
-		this.DATA[i]=parseInt(brush.value);
+		const idx=parseInt(brush.value);
+		if(this.fillMode){
+			BLACK.GRAPHIC.floodFill(this.DATA,this.SIZE,i,idx);
+		} else {
+			this.DATA[i]=idx;
+		}
 		this.buildTable();
 	},
 	SETFLOOR(){this.floorIdx=parseInt(document.getElementById('mapFloor').value);},
 	SETCEIL(){this.ceilIdx=parseInt(document.getElementById('mapCeil').value);},
-	isWall(x,y){const mx=Math.floor(x),my=Math.floor(y);if(mx<0||my<0||mx>=this.SIZE||my>=this.SIZE)return true;return this.DATA[my*this.SIZE+mx]>=0;}
+	isWall(x,y){const mx=Math.floor(x),my=Math.floor(y);if(mx<0||my<0||mx>=this.SIZE||my>=this.SIZE)return true;return this.DATA[my*this.SIZE+mx]>=0;},
+	// Programmatic setters for CUI bridge commands (SETTILE/SETFLOOR/SETCEIL): reference an
+	// already-GUI-authored sprite by index, never carry raw pixel data through CUI text.
+	SET(x,y,idx){
+		const mx=Math.floor(x),my=Math.floor(y);
+		if(mx<0||my<0||mx>=this.SIZE||my>=this.SIZE) return;
+		this.DATA[my*this.SIZE+mx]=idx;
+		this.buildTable();
+	},
+	FLOOR(idx){
+		this.floorIdx=idx;
+		const sel=document.getElementById('mapFloor');
+		if(sel) sel.value=idx;
+	},
+	CEIL(idx){
+		this.ceilIdx=idx;
+		const sel=document.getElementById('mapCeil');
+		if(sel) sel.value=idx;
+	}
 };
 </script>
 <script id="script-movie">
@@ -808,21 +1592,27 @@ BLACK.GRAPHIC.MOVIE={
 	STOP(){
 		this.playing=false;
 		if(this.raf){clearTimeout(this.raf);this.raf=null;}
+	},
+	// Programmatic trigger for the PLAYMOVIE CUI bridge command: select an already-GUI-authored
+	// movie by index, then play it, mirroring the SOUND SNDLOAD/SNDPLAYTRACK reference pattern.
+	PLAY_INDEX(idx){
+		if(idx<0||idx>=this.LIST.length) return;
+		this.cur=idx;
+		this.curFrame=0;
+		this.REFRESH();
+		this.PLAY();
 	}
 };
 </script>
 <script id="script-sound">
 // SOUND: WAVE (synth patch) + NOTE (step pattern) + TRACK (wave+note channel) + MASTER (mixer/transport) + MML (export/import) engine
 BLACK.SOUND={
-	ctx:null,osc:null,
-	BEEP(){try{this.ctx=this.ctx||new (window.AudioContext||window.webkitAudioContext)();this.STOP();this.osc=this.ctx.createOscillator();const g=this.ctx.createGain();this.osc.frequency.value=440;g.gain.value=.08;this.osc.connect(g).connect(this.ctx.destination);this.osc.start();document.getElementById('soundOut').textContent='PLAYING 440Hz';}catch(e){document.getElementById('soundOut').textContent='Audio error: '+e.message;}},
-	STOP(){if(this.osc){try{this.osc.stop();}catch(e){}this.osc.disconnect();this.osc=null;}const o=document.getElementById('soundOut');if(o)o.textContent='READY';}
-	,
 	PAGES:['WAVE','NOTE','TRACK','MASTER'],
 	curPage:'WAVE',
 	PAGE(name){
 		this.curPage=name;
 		for(const p of this.PAGES){const el=document.getElementById('SOUND_'+p);if(el) el.style.display=(p===name)?'block':'none';}
+		BLACK.SYS.HIGHLIGHT('navSOUND',name);
 		if(name==='WAVE') this.WAVE.REFRESH();
 		if(name==='NOTE') this.NOTE.REFRESH();
 		if(name==='TRACK') this.TRACK.REFRESH();
@@ -998,6 +1788,7 @@ BLACK.SOUND={
 			}
 			osc1.start(now);osc1.stop(stopAt);
 			this.registerVoice(nodes);
+			return nodes;
 		}
 	},
 	WAVE:{
@@ -1007,6 +1798,14 @@ BLACK.SOUND={
 		filtDrag:false,
 		ENV:{x0:10,padTop:8,base:92,ax:70,dx:70,sx:40,rx:70},
 		FILT:{x0:10,x1:290,yTop:8,yBase:92,fLo:20,fHi:20000,dbTop:18,dbBot:-30,cLo:100,cHi:8000,qLo:0.1,qHi:20},
+		// The waveCutoff/waveQ <input type=range> sliders use a 0-1000 log-scaled position (matching
+		// how the filter-graph drag point already moves - see freqToX/xToFreq), so dragging the
+		// slider and dragging the graph point feel the same instead of one being linear and the
+		// other logarithmic.
+		freqToSlider(f){const {cLo,cHi}=this.FILT;const t=Math.log(Math.max(cLo,Math.min(cHi,f))/cLo)/Math.log(cHi/cLo);return Math.round(t*1000)},
+		sliderToFreq(v){const {cLo,cHi}=this.FILT;const t=Math.max(0,Math.min(1,v/1000));return cLo*Math.pow(cHi/cLo,t)},
+		qToSlider(q){const {qLo,qHi}=this.FILT;const t=Math.log(Math.max(qLo,Math.min(qHi,q))/qLo)/Math.log(qHi/qLo);return Math.round(t*1000)},
+		sliderToQ(v){const {qLo,qHi}=this.FILT;const t=Math.max(0,Math.min(1,v/1000));return qLo*Math.pow(qHi/qLo,t)},
 		DEFAULT(){return {osc1:'sine',use2:false,osc2:'square',combine:'add',filter:'none',cutoff:1000,q:10,a:10,d:100,s:0.7,r:200};},
 		INIT(){this.LIST=[this.DEFAULT()];this.cur=0;},
 		NEW(){this.LIST.push(this.DEFAULT());this.cur=this.LIST.length-1;this.REFRESH();},
@@ -1026,10 +1825,12 @@ BLACK.SOUND={
 			document.getElementById('waveOsc1').value=w.osc1;
 			document.getElementById('waveUse2').checked=w.use2;
 			document.getElementById('waveOsc2').value=w.osc2;
+			document.getElementById('waveOsc2').disabled=!w.use2;
 			document.getElementById('waveCombine').value=w.combine;
+			document.getElementById('waveCombine').disabled=!w.use2;
 			document.getElementById('waveFilter').value=w.filter;
-			document.getElementById('waveCutoff').value=w.cutoff;
-			document.getElementById('waveQ').value=Math.round(w.q*10);
+			document.getElementById('waveCutoff').value=this.freqToSlider(w.cutoff);
+			document.getElementById('waveQ').value=this.qToSlider(w.q);
 			document.getElementById('waveA').value=w.a;
 			document.getElementById('waveD').value=w.d;
 			document.getElementById('waveS').value=Math.round(w.s*100);
@@ -1045,10 +1846,12 @@ BLACK.SOUND={
 			w.osc1=document.getElementById('waveOsc1').value;
 			w.use2=document.getElementById('waveUse2').checked;
 			w.osc2=document.getElementById('waveOsc2').value;
+			document.getElementById('waveOsc2').disabled=!w.use2;
 			w.combine=document.getElementById('waveCombine').value;
+			document.getElementById('waveCombine').disabled=!w.use2;
 			w.filter=document.getElementById('waveFilter').value;
-			w.cutoff=parseFloat(document.getElementById('waveCutoff').value);
-			w.q=parseFloat(document.getElementById('waveQ').value)/10;
+			w.cutoff=this.sliderToFreq(parseFloat(document.getElementById('waveCutoff').value));
+			w.q=this.sliderToQ(parseFloat(document.getElementById('waveQ').value));
 			w.a=parseFloat(document.getElementById('waveA').value);
 			w.d=parseFloat(document.getElementById('waveD').value);
 			w.s=parseFloat(document.getElementById('waveS').value)/100;
@@ -1226,8 +2029,8 @@ BLACK.SOUND={
 				const targetDb=Math.max(self.FILT.dbBot,Math.min(self.FILT.dbTop,self.yToDb(p.y)));
 				w.cutoff=freq;
 				w.q=self.solveQForDb(w.filter,freq,targetDb);
-				document.getElementById('waveCutoff').value=Math.round(w.cutoff);
-				document.getElementById('waveQ').value=Math.round(w.q*10);
+				document.getElementById('waveCutoff').value=self.freqToSlider(w.cutoff);
+				document.getElementById('waveQ').value=self.qToSlider(w.q);
 				self.drawFilterCurve();
 			});
 			window.addEventListener('pointerup',()=>{
@@ -1237,7 +2040,14 @@ BLACK.SOUND={
 		PLAY(){
 			const w=this.LIST[this.cur];
 			if(!w) return;
-			BLACK.SOUND.ENGINE.PLAY(w,440,0.4);
+			this.STOP();
+			this._voice=BLACK.SOUND.ENGINE.PLAY(w,440,0.4);
+		},
+		STOP(){
+			if(this._voice){
+				for(const n of this._voice){try{n.stop();}catch(e){}}
+				this._voice=null;
+			}
 		}
 	},
 	NOTE:{
@@ -1558,6 +2368,7 @@ BLACK.SOUND={
 	MML_LOAD(){
 		const t=document.getElementById('mmlText');
 		if(!t) return;
+		if(!confirm('Loading MML replaces all current WAVE/NOTE/TRACK/MASTER content. Continue?')) return;
 		const bank=this.MML.PARSE(t.value);
 		this.WAVE.LIST=bank.waves.length?bank.waves:[this.WAVE.DEFAULT()];
 		this.WAVE.cur=0;
@@ -1668,18 +2479,66 @@ BLACK.SERVER={
 <script id="script-cui">
 // CUI: BASIC language console UI (uses the MAGIC compiler)
 BLACK.CUI={
-	RUN(){const out=document.getElementById('out');try{const js=MAGIC.compile(document.getElementById('code').value);new Function('magic',js)(MAGIC);out.className='unit ok';out.textContent='RUN OK\n\nGenerated JS:\n'+js}catch(e){out.className='unit err';out.textContent=e.stack||String(e)}},
-	COMPILE(){const out=document.getElementById('out');try{const js=MAGIC.compile(document.getElementById('code').value);out.className='unit';out.textContent=js}catch(e){out.className='unit err';out.textContent=e.stack||String(e)}},
+	// Bridge target for the compiled PRINT command (see MAGIC.registerCommand('PRINT', ...)).
+	// Generated code calls BLACK.CUI.PRINT(...) directly at runtime so PRINT output is visible
+	// in the #out panel, instead of only reaching the browser devtools console.
+	PRINT(...args){
+		const text=args.join(' ');
+		const out=document.getElementById('out');
+		if(out) out.textContent += (out.textContent?'\n':'') + text;
+		BLACK.GUI.LOG(text);
+	},
+	// RUN switches to GUI immediately so gameplay (including INPUT trials) plays out entirely
+	// on the GUI dialog/HUD from here on, instead of needing the player to bounce back to CUI.
+	// The compiled program is wrapped in an async IIFE so INPUT_STMT's "await BLACK.GUI.INPUT_ASYNC
+	// (...)" can suspend execution until the player answers.
+	RUN(){
+		const out=document.getElementById('out');
+		out.style.color='#ccf';
+		out.textContent='';
+		BLACK.GUI.CLEARLOG();
+		BLACK.SYS.ON('GUI');
+		try{
+			const js=MAGIC.compile(document.getElementById('code').value);
+			const run=new Function('magic','return (async function(){\n'+js+'\n})();');
+			run(MAGIC).then(()=>{
+				if(!out.textContent) out.textContent='RUN OK (no output)';
+				out.style.color='#8f8';
+			}).catch(e=>{
+				out.textContent += (out.textContent?'\n\n':'') + (e.stack||String(e));
+				out.style.color='#f88';
+				BLACK.GUI.LOG('ERROR: '+(e.message||String(e)));
+			});
+		}catch(e){
+			out.textContent += (out.textContent?'\n\n':'') + (e.stack||String(e));
+			out.style.color='#f88';
+		}
+	},
+	COMPILE(){const out=document.getElementById('out');try{const js=MAGIC.compile(document.getElementById('code').value);BLACK.SYS.STATUS(out,js)}catch(e){BLACK.SYS.STATUS(out,e.stack||String(e),'err')}},
 	TEST(){const samples=[
-		['expression','LET A = 2 + 3 * 4\nPRINT A'],
-		['array','DIM A(2,3)\nLET A(1,2)=7\nPRINT A(1,2)'],
-		['condition','IF NOT (1 = 2) THEN\nPRINT "OK"\nENDIF'],
-		['for-step','FOR I=5 TO 1 STEP -2\nPRINT I\nNEXT'],
-		['while','LET I=0\nWHILE I<2\nPRINT I\nLET I=I+1\nWEND'],
-		['sub','SUB F(X)\nPRINT X*2\nENDSUB\nF 9'],
-		['functions','PRINT ABS(-3),SQR(9),10 MOD 4,2^4']
-	];let r=[];for(const [n,s] of samples){try{MAGIC.compile(s);r.push('PASS '+n)}catch(e){r.push('FAIL '+n+': '+e.message)}}document.getElementById('out').className='unit';document.getElementById('out').textContent=r.join('\n')},
-	CLEAR(){document.getElementById('out').textContent=''}
+		// [name, code, expectFail]  -- expectFail:true means compile() must throw to PASS
+		['expression','LET A = 2 + 3 * 4\nPRINT A',false],
+		['array','DIM A(2,3)\nLET A(1,2)=7\nPRINT A(1,2)',false],
+		['condition','IF NOT (1 = 2) THEN\nPRINT "OK"\nENDIF',false],
+		['for-step','FOR I=5 TO 1 STEP -2\nPRINT I\nNEXT',false],
+		['while','LET I=0\nWHILE I<2\nPRINT I\nLET I=I+1\nWEND',false],
+		['sub','SUB F(X)\nPRINT X*2\nENDSUB\nF 9',false],
+		['functions','PRINT ABS(-3),SQR(9),10 MOD 4,2^4',false],
+		['mid-2arg','PRINT MID$("HELLO",2)',false],
+		['dialog','DIALOG "Hello " + "world"',false],
+		['nested-sub-return','SUB OUTER()\nSUB INNER()\nPRINT 1\nENDSUB\nRETURN\nENDSUB',false],
+		['break-across-sub','FOR I=1 TO 3\nSUB G()\nBREAK\nENDSUB\nNEXT',true],
+		['continue-across-sub','WHILE 1\nSUB G()\nCONTINUE\nENDSUB\nWEND',true],
+		['break-outside-loop','BREAK',true],
+		['return-outside-sub','RETURN',true]
+	];const r=[];for(const [n,s,expectFail] of samples){
+		let threw=false,msg='';
+		try{MAGIC.compile(s)}catch(e){threw=true;msg=e.message}
+		const ok = threw===expectFail;
+		r.push((ok?'PASS ':'FAIL ')+n+(threw?' (rejected: '+msg+')':''))
+	}
+	BLACK.SYS.STATUS(document.getElementById('out'),r.join('\n'))},
+	CLEAR(){const out=document.getElementById('out');out.textContent='';out.style.color='#ccf'}
 };
 </script>
 <script id="script-magic">
@@ -1702,16 +2561,12 @@ const MAGIC={
 	getExprList(code,optional=false){const p=this.pos,l=this.line;try{const a=[this.getExpr(code)];while(true){const q=this.pos,ll=this.line;if(this.tryGet(function(c){return this.getOp(c,',')},code)===null){this.pos=q;this.line=ll;break}a.push(this.getExpr(code))}return a}catch(e){if(optional){this.pos=p;this.line=l;return null}throw e}},
 	getIntList(code){const a=[this.getInteger(code)];while(true){const p=this.pos,l=this.line;if(this.tryGet(function(c){return this.getOp(c,',')},code)===null){this.pos=p;this.line=l;break}a.push(this.getInteger(code))}return a},
 	getProgram(code){const out=[];while(true){this.skip(code);if(this.pos>=code.length)break;const p=this.pos,l=this.line;const s=this.tryGet(this.getStmt,code);if(s===null){this.pos=p;this.line=l;break}if(s)out.push(s)}return out.join('\n')},
-	getStmt(code){return this.tryGet(this.getCtrlStmt,code)||this.tryGet(this.getCmdStmt,code)},
-	getCmdStmt(code){const p=this.pos,l=this.line;const k=this.read(code);if(!k){this.pos=p;this.line=l;return null}const h=this.DIC.USER[k]||this.DIC.BUILTIN[k];if(!h){this.pos=p;this.line=l;return null}return h.call(this,code)},
-	getCtrlStmt(code){return this.tryGet(this.getForStmt,code)||this.tryGet(this.getIfStmt,code)||this.tryGet(this.getWhileStmt,code)||this.tryGet(this.getSubStmt,code)},
+	getStmt(code){const p=this.pos,l=this.line;const k=this.read(code);if(!k){this.pos=p;this.line=l;return null}const h=this.DIC.CTRL[k]||this.DIC.USER[k]||this.DIC.BUILTIN[k];if(!h){this.pos=p;this.line=l;return null}return h.call(this,code)},
 	getStmtList(code){const a=[];while(true){const p=this.pos,l=this.line;const s=this.tryGet(this.getStmt,code);if(s===null){this.pos=p;this.line=l;break}if(s)a.push(s)}return a},
-	getForStmt(code){this.getOp(code,'FOR');const n=this.getVariable(code);this.getOp(code,'=');const from=this.getExpr(code);this.getOp(code,'TO');const to=this.getExpr(code);let step=this.tryGet(c=>this.getOp(c,'STEP'),code);step=step?this.getExpr(code):'1';this.BLOCKS.push('FOR');const body=this.getStmtList(code);this.getOp(code,'NEXT');this.BLOCKS.pop();const id=this.temp();return '{\nlet '+id+'to=('+to+'), '+id+'step=('+step+');\nfor(var '+n+'=('+from+'); '+id+'step>=0 ? '+n+'<='+id+'to : '+n+'>='+id+'to; '+n+'+='+id+'step){\n'+body.join('\n')+'\n}\n}'},
-	getIfStmt(code){this.getOp(code,'IF');const c=this.getCond(code);this.getOp(code,'THEN');this.BLOCKS.push('IF');const a=this.getStmtList(code);let js='if('+c+'){\n'+a.join('\n')+'\n}';const has=this.tryGet(c=>this.getOp(c,'ELSE'),code);if(has){const b=this.getStmtList(code);js+='else{\n'+b.join('\n')+'\n}'}this.getOp(code,'ENDIF');this.BLOCKS.pop();return js},
-	getWhileStmt(code){this.getOp(code,'WHILE');const c=this.getCond(code);this.getOp(code,'WEND');this.pos-=4; // restore to reparse body position safely
-	// The line above cannot be used because WEND is after body. Rewind is replaced below.
-	throw new Error('internal WHILE parser marker')},
-	getSubStmt(code){this.getOp(code,'SUB');const n=this.getVariable(code);this.getOp(code,'(');const params=this.tryGet(this.getVariableList,code)||[];this.getOp(code,')');this.BLOCKS.push('SUB');this.CURRENT_SUB=n;const body=this.getStmtList(code);this.getOp(code,'ENDSUB');this.BLOCKS.pop();this.CURRENT_SUB=null;this.DIC.USER[n]=(c)=>{const args=this.getExprList(c,true)||[];return n+'('+args.join(', ')+');'};return 'function '+n+'('+params.join(', ')+'){\n'+body.join('\n')+'\n}'},
+	getForStmt(code){const n=this.getVariable(code);this.getOp(code,'=');const from=this.getExpr(code);this.getOp(code,'TO');const to=this.getExpr(code);let step=this.tryGet(c=>this.getOp(c,'STEP'),code);step=step?this.getExpr(code):'1';this.BLOCKS.push('FOR');const body=this.getStmtList(code);this.getOp(code,'NEXT');this.BLOCKS.pop();const id=this.temp();return '{\nlet '+id+'to=('+to+'), '+id+'step=('+step+');\nfor(let '+n+'=('+from+'); '+id+'step>=0 ? '+n+'<='+id+'to : '+n+'>='+id+'to; '+n+'+='+id+'step){\n'+body.join('\n')+'\n}\n}'},
+	getIfStmt(code){const c=this.getCond(code);this.getOp(code,'THEN');this.BLOCKS.push('IF');const a=this.getStmtList(code);let js='if('+c+'){\n'+a.join('\n')+'\n}';const has=this.tryGet(c=>this.getOp(c,'ELSE'),code);if(has){const b=this.getStmtList(code);js+='else{\n'+b.join('\n')+'\n}'}this.getOp(code,'ENDIF');this.BLOCKS.pop();return js},
+	getWhileStmt(code){const c=this.getCond(code);this.BLOCKS.push('WHILE');const body=this.getStmtList(code);this.getOp(code,'WEND');this.BLOCKS.pop();return 'while('+c+'){\n'+body.join('\n')+'\n}'},
+	getSubStmt(code){const n=this.getVariable(code);this.getOp(code,'(');const params=this.tryGet(this.getVariableList,code)||[];this.getOp(code,')');this.BLOCKS.push('SUB');const savedSub=this.CURRENT_SUB;this.CURRENT_SUB=n;const body=this.getStmtList(code);this.getOp(code,'ENDSUB');this.BLOCKS.pop();this.CURRENT_SUB=savedSub;this.DIC.USER[n]=(c)=>{const args=this.getExprList(c,true)||[];return 'await '+n+'('+args.join(', ')+');'};return 'async function '+n+'('+params.join(', ')+'){\n'+body.join('\n')+'\n}'},
 	getCond(code){return this.getOrExpr(code)},
 	getOrExpr(code){let x=this.getAndExpr(code);while(true){const p=this.pos,l=this.line;if(this.tryGet(c=>this.getOp(c,'OR'),code)===null){this.pos=p;this.line=l;break}x='(('+x+') || ('+this.getAndExpr(code)+'))'}return x},
 	getAndExpr(code){let x=this.getNotExpr(code);while(true){const p=this.pos,l=this.line;if(this.tryGet(c=>this.getOp(c,'AND'),code)===null){this.pos=p;this.line=l;break}x='(('+x+') && ('+this.getNotExpr(code)+'))'}return x},
@@ -1725,25 +2580,37 @@ const MAGIC={
 	getFactor(code){if(this.tryGet(c=>this.getOp(c,'-'),code)!==null)return '-('+this.getFactor(code)+')';return this.getAtom(code)},
 	getAtom(code){if(this.tryGet(c=>this.getOp(c,'('),code)!==null){const x=this.getExpr(code);this.getOp(code,')');return '('+x+')'}const n=this.tryGet(this.getNumber,code);if(n!==null)return n;const s=this.tryGet(this.getString,code);if(s!==null)return s;const p=this.pos,l=this.line;try{const name=this.getVariable(code);if(this.peek(code)==='(' && this.DIC.FUNCTION[name]){this.getOp(code,'(');const args=this.getExprList(code,true)||[];this.getOp(code,')');return this.DIC.FUNCTION[name](args)}this.pos=p;this.line=l}catch(e){this.pos=p;this.line=l}return this.getVarRef(code)},
 	getVarRef(code){const n=this.getVariable(code);const p=this.pos,l=this.line;if(this.tryGet(c=>this.getOp(c,'('),code)!==null){const idx=this.getExprList(code);this.getOp(code,')');return n+'['+this.getLinearIndex(n,idx)+']'}this.pos=p;this.line=l;return n},
-	getLinearIndex(name,idx){const d=this.DIMS[name];if(!d)throw new Error('Array '+name+' is not DIMed');if(idx.length!==d.dims.length)throw new Error('Array '+name+' expects '+d.dims.length+' indices');return idx.map((x,i)=>'('+x+')*'+d.strides[i]).join('+')||'0'},
+	getLinearIndex(name,idx){const d=this.DIMS[name];if(!d)throw new Error('Array '+name+' is not DIMed');if(idx.length!==d.dims.length)throw new Error('Array '+name+' expects '+d.dims.length+' indices');const lin=idx.map((x,i)=>'('+x+')*'+d.strides[i]).join('+')||'0';return 'magic.CHECK_IDX('+JSON.stringify(name)+',('+lin+'),'+d.total+')'},
+	// Runtime bounds check for array access; called from generated code as magic.CHECK_IDX(...)
+	// since out-of-range indices previously failed silently (returned/wrote undefined) instead
+	// of surfacing a clear error.
+	CHECK_IDX(name,i,max){if(!Number.isInteger(i)||i<0||i>=max)throw new Error('Array index out of bounds: '+name+'['+i+'] (valid range 0..'+(max-1)+')');return i},
 	temp(){this._temp=(this._temp||0)+1;return '__b'+this._temp+'_'},
+	inLoop(){for(let i=this.BLOCKS.length-1;i>=0;i--){if(this.BLOCKS[i]==='SUB')return false;if(this.BLOCKS[i]==='FOR'||this.BLOCKS[i]==='WHILE')return true}return false},
 	registerCommand(name,handler){this.DIC.BUILTIN[name]=handler},
+	registerControl(name,handler){this.DIC.CTRL[name]=handler},
 	registerFunction(name,handler){this.DIC.FUNCTION[name]=handler},
-	DIC:{BUILTIN:{},USER:{},FUNCTION:{}},
+	DIC:{CTRL:{},BUILTIN:{},USER:{},FUNCTION:{}},
 	compile(code){this.pos=0;this.line=1;this.DIMS={};this.DIC.USER={};this.BLOCKS=[];this.CURRENT_SUB=null;this._temp=0;const js=this.getProgram(code);this.skip(code);if(this.pos<code.length)throw new Error('Syntax Error: unexpected '+this.read(code)+' at line '+this.line);return js}
 };
-// Fix WHILE parser with the same explicit block strategy as the other controls.
-MAGIC.getWhileStmt=function(code){this.getOp(code,'WHILE');const c=this.getCond(code);this.BLOCKS.push('WHILE');const body=this.getStmtList(code);this.getOp(code,'WEND');this.BLOCKS.pop();return 'while('+c+'){\n'+body.join('\n')+'\n}'};
+// CTRL_STMT keywords are registered into DIC.CTRL, same dictionary-dispatch convention as registerCommand.
+MAGIC.registerControl('FOR',MAGIC.getForStmt);
+MAGIC.registerControl('IF',MAGIC.getIfStmt);
+MAGIC.registerControl('WHILE',MAGIC.getWhileStmt);
+MAGIC.registerControl('SUB',MAGIC.getSubStmt);
 // Built-in flat commands. All additions below use the same DIC interface.
 MAGIC.registerCommand('LET',function(code){const n=this.getVariable(code);const p=this.pos,l=this.line;if(this.tryGet(c=>this.getOp(c,'('),code)!==null){const idx=this.getExprList(code);this.getOp(code,')');this.getOp(code,'=');const v=this.getExpr(code);return n+'['+this.getLinearIndex(n,idx)+'] = '+v+';'}this.pos=p;this.line=l;this.getOp(code,'=');return n+' = '+this.getExpr(code)+';'});
-MAGIC.registerCommand('DIM',function(code){const n=this.getVariable(code);this.getOp(code,'(');const dims=this.getIntList(code).map(Number);this.getOp(code,')');let total=1,strides=new Array(dims.length);for(let i=dims.length-1;i>=0;i--){strides[i]=total;total*=dims[i]}this.DIMS[n]={dims,strides};return n.endsWith('$')?'var '+n+' = new Array('+total+');':'var '+n+' = new Float64Array('+total+');'});
-MAGIC.registerCommand('PRINT',function(code){const a=this.getExprList(code);return 'console.log('+a.join(', ')+');'});
-MAGIC.registerCommand('INPUT',function(code){return this.getVariableList(code).map(n=>n.endsWith('$')?n+' = prompt("'+n+'?");':n+' = Number(prompt("'+n+'?"));').join('\n')});
+MAGIC.registerCommand('DIM',function(code){const n=this.getVariable(code);this.getOp(code,'(');const dims=this.getIntList(code).map(Number);this.getOp(code,')');let total=1,strides=new Array(dims.length);for(let i=dims.length-1;i>=0;i--){strides[i]=total;total*=dims[i]}this.DIMS[n]={dims,strides,total};return n.endsWith('$')?'var '+n+' = new Array('+total+').fill(\'\');':'var '+n+' = new Float64Array('+total+');'});
+MAGIC.registerCommand('PRINT',function(code){const a=this.getExprList(code);return 'BLACK.CUI.PRINT('+a.join(', ')+');'});
+MAGIC.registerCommand('INPUT',function(code){return this.getVariableList(code).map(n=>n.endsWith('$')?n+' = await BLACK.GUI.INPUT_ASYNC("'+n+'?");':n+' = Number(await BLACK.GUI.INPUT_ASYNC("'+n+'?"));').join('\n')});
+// DIALOG: centered "press E/Enter to continue" message box, distinct from INPUT (which collects
+// typed text). See BLACK.GUI.DIALOG_ASYNC and the DIALOG_STMT entry in the grammar doc.
+MAGIC.registerCommand('DIALOG',function(code){const a=this.getExprList(code);return 'await BLACK.GUI.DIALOG_ASYNC(['+a.join(', ')+'].join(" "));'});
 MAGIC.registerCommand('REM',function(code){while(this.pos<code.length&&code[this.pos]!=='\n')this.pos++;return ''});
 MAGIC.registerCommand('END',function(){return 'return;'});
 MAGIC.registerCommand('STOP',function(){return 'return;'});
-MAGIC.registerCommand('BREAK',function(){if(!this.BLOCKS.includes('FOR')&&!this.BLOCKS.includes('WHILE'))throw new Error('BREAK outside loop at line '+this.line);return 'break;'});
-MAGIC.registerCommand('CONTINUE',function(){if(!this.BLOCKS.includes('FOR')&&!this.BLOCKS.includes('WHILE'))throw new Error('CONTINUE outside loop at line '+this.line);return 'continue;'});
+MAGIC.registerCommand('BREAK',function(){if(!this.inLoop())throw new Error('BREAK outside loop at line '+this.line);return 'break;'});
+MAGIC.registerCommand('CONTINUE',function(){if(!this.inLoop())throw new Error('CONTINUE outside loop at line '+this.line);return 'continue;'});
 MAGIC.registerCommand('RETURN',function(){if(!this.CURRENT_SUB)throw new Error('RETURN outside SUB at line '+this.line);return 'return;'});
 // SOUND bank commands: bridge into BLACK.SOUND, which is reachable from generated code
 // because top-level const declarations in this script share the page's global lexical scope.
@@ -1753,11 +2620,21 @@ MAGIC.registerCommand('SNDPLAYNOTE',function(code){const a=this.getExprList(code
 MAGIC.registerCommand('SNDPLAYTRACK',function(code){const a=this.getExprList(code);return 'BLACK.SOUND.SNDPLAYTRACK('+a.join(',')+');'});
 MAGIC.registerCommand('SNDSTOPTRACK',function(code){const a=this.getExprList(code);return 'BLACK.SOUND.SNDSTOPTRACK('+a.join(',')+');'});
 MAGIC.registerCommand('SNDSTOPALL',function(){return 'BLACK.SOUND.SNDSTOPALL();'});
+// GRAPHIC reference/trigger commands: same bridge pattern as SOUND above. These never carry raw
+// pixel/map data through CUI text -- they only point at content already authored on the GRAPHIC/GUI
+// pages by index, so CUI stays a behavior/orchestration layer and content stays GUI-owned (no
+// two-way data sync needed between the CUI text and each page's editor state).
+MAGIC.registerCommand('SETTILE',function(code){const a=this.getExprList(code);return 'BLACK.GRAPHIC.MAP.SET('+a.join(',')+');'});
+MAGIC.registerCommand('SETFLOOR',function(code){const a=this.getExprList(code);return 'BLACK.GRAPHIC.MAP.FLOOR('+a.join(',')+');'});
+MAGIC.registerCommand('SETCEIL',function(code){const a=this.getExprList(code);return 'BLACK.GRAPHIC.MAP.CEIL('+a.join(',')+');'});
+MAGIC.registerCommand('TELEPORT',function(code){const a=this.getExprList(code);return 'BLACK.GUI.TELEPORT('+a.join(',')+');'});
+MAGIC.registerCommand('SETDOORKEY',function(code){const a=this.getExprList(code);return 'BLACK.GUI.SETDOORKEY('+a.join(',')+');'});
+MAGIC.registerCommand('PLAYMOVIE',function(code){const a=this.getExprList(code);return 'BLACK.GRAPHIC.MOVIE.PLAY_INDEX('+a.join(',')+');'});
 // Expression functions: each handler returns JavaScript expression text.
 const F=MAGIC.registerFunction.bind(MAGIC);
 F('ABS',a=>'Math.abs('+a[0]+')');F('INT',a=>'Math.floor('+a[0]+')');F('SGN',a=>'Math.sign('+a[0]+')');F('SQR',a=>'Math.sqrt('+a[0]+')');
 F('SIN',a=>'Math.sin('+a[0]+')');F('COS',a=>'Math.cos('+a[0]+')');F('TAN',a=>'Math.tan('+a[0]+')');F('ASIN',a=>'Math.asin('+a[0]+')');F('ACOS',a=>'Math.acos('+a[0]+')');F('ATN',a=>'Math.atan('+a[0]+')');F('EXP',a=>'Math.exp('+a[0]+')');F('LOG',a=>'Math.log('+a[0]+')');F('LOG10',a=>'Math.log10('+a[0]+')');
-F('RND',a=>'Math.random()');F('PI',a=>'Math.PI');F('LEN',a=>'String('+a[0]+').length');F('LEFT$',a=>'String('+a[0]+').substring(0,'+a[1]+')');F('RIGHT$',a=>'String('+a[0]+').slice(-('+a[1]+'))');F('MID$',a=>'String('+a[0]+').substring(('+a[1]+')-1'+(a[2]!==undefined?',('+a[1]+')-1+('+a[2]+')':')')+')');F('STR$',a=>'String('+a[0]+')');F('VAL',a=>'Number('+a[0]+')');F('MIN',a=>'Math.min('+a.join(',')+')');F('MAX',a=>'Math.max('+a.join(',')+')');
+F('RND',a=>'Math.random()');F('PI',a=>'Math.PI');F('LEN',a=>'String('+a[0]+').length');F('LEFT$',a=>'String('+a[0]+').substring(0,'+a[1]+')');F('RIGHT$',a=>'String('+a[0]+').slice(-('+a[1]+'))');F('MID$',a=>'String('+a[0]+').substring(('+a[1]+')-1'+(a[2]!==undefined?',('+a[1]+')-1+('+a[2]+')':'')+')');F('STR$',a=>'String('+a[0]+')');F('VAL',a=>'Number('+a[0]+')');F('MIN',a=>'Math.min('+a.join(',')+')');F('MAX',a=>'Math.max('+a.join(',')+')');
 </script>
 </body>
 </html>
