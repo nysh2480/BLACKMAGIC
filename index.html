@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html>
 <head>
@@ -238,9 +237,7 @@ PRINT ""
 REM ===== Victory: unlock the door for the GUI interact system =====
 SETDOORKEY 1
 SNDPLAYNOTE "vault", 2, 2
-PRINT "All four bolts are open! The vault door is unlocked."
-PRINT "Open the GUI tab, walk up to the gold door, and press"
-PRINT "E (or tap the on-screen button) to swing it open."</textarea>
+DIALOG "All four bolts are open! The vault door is unlocked.\nWalk up to the gold door and press E (or tap the on-screen button) to swing it open."</textarea>
 <pre id="out" class="unit"></pre>
 </div>
 <div id="GUI" class="unit panel" style="display:none">
@@ -776,9 +773,7 @@ BLACK.SYS={
 				'REM ===== Victory: unlock the door for the GUI interact system =====',
 				'SETDOORKEY 1',
 				'SNDPLAYNOTE "vault", 2, 2',
-				'PRINT "All four bolts are open! The vault door is unlocked."',
-				'PRINT "Open the GUI tab, walk up to the gold door, and press"',
-				'PRINT "E (or tap the on-screen button) to swing it open."'
+				'DIALOG "All four bolts are open! The vault door is unlocked.\\nWalk up to the gold door and press E (or tap the on-screen button) to swing it open."'
 			].join('\n');
 			return {
 				version:1,
@@ -838,6 +833,12 @@ BLACK.GUI={
 	dialogLines:[],
 	inputMode:false,
 	messageMode:false,
+	// Gate that keeps the guiDialog overlay hidden the instant RUN starts (PRINT/INPUT from the
+	// CUI script would otherwise pop the overlay open immediately, before the player has done
+	// anything). Stays closed until the player's first E/Enter/tap, reset to false at the start
+	// of every RUN (see BLACK.CUI.RUN). Once opened it stays open for the rest of the session,
+	// so door DIALOG_ASYNC messages and their E-to-dismiss behavior work exactly as before.
+	dialogGateOpen:false,
 	currentPrompt:'',
 	// Live typed text for INPUT; shown in the dialog overlay and submitted on Enter.
 	// Kept in sync with guiHiddenInput so both desktop keydown and mobile on-screen keyboard work.
@@ -855,6 +856,7 @@ BLACK.GUI={
 		String(text).split('\n').forEach(line=>this.dialogLines.push(line));
 		if(this.dialogLines.length>6) this.dialogLines=this.dialogLines.slice(-6);
 		this.RENDER_DIALOG();
+		this.updateInteractUI();
 	},
 	CLEARLOG(){
 		this.dialogLines=[];
@@ -875,7 +877,7 @@ BLACK.GUI={
 		}
 		span.textContent=text;
 		if(hint) hint.textContent = this.inputMode ? '[ENTER] to submit' : this.messageMode ? '[E] to continue' : '';
-		box.style.display = (text || this.messageMode) ? 'block' : 'none';
+		box.style.display = (this.dialogGateOpen && (text || this.messageMode)) ? 'block' : 'none';
 		box.scrollTop=box.scrollHeight;
 	},
 	// Toggles cursorOn every 500ms; only re-renders while an INPUT is actually pending so the
@@ -898,7 +900,7 @@ BLACK.GUI={
 	// Hidden input's oninput: sync buffer from the field (mobile/on-screen keyboard path) and
 	// re-render so typed text echoes live inside the dialog.
 	_ECHO_INPUT(){
-		if(!this.inputMode) return;
+		if(!this.inputMode||!this.dialogGateOpen) return;
 		const field=document.getElementById('guiHiddenInput');
 		if(field) this.inputBuffer=field.value;
 		this.RENDER_DIALOG();
@@ -906,7 +908,7 @@ BLACK.GUI={
 	// Hidden input keydown: Enter submits; other keys are handled via oninput for mobile, and
 	// also via the document keydown path for desktop when the field is not focused.
 	_HIDDEN_KEYDOWN(e){
-		if(!this.inputMode) return;
+		if(!this.inputMode||!this.dialogGateOpen) return;
 		if(e.key==='Enter'){
 			e.preventDefault();
 			this._SUBMIT_INPUT();
@@ -955,9 +957,12 @@ BLACK.GUI={
 			const field=document.getElementById('guiHiddenInput');
 			const interactBtn=document.getElementById('guiInteractBtn');
 			if(field) field.value='';
-			if(interactBtn) interactBtn.style.display='none';
-			if(field) field.focus();
+			if(this.dialogGateOpen){
+				if(interactBtn) interactBtn.style.display='none';
+				if(field) field.focus();
+			}
 			this.RENDER_DIALOG();
+			this.updateInteractUI();
 			this._inputResolve=resolve;
 		});
 	},
@@ -989,8 +994,9 @@ BLACK.GUI={
 			this.keys={};
 			this.dialogLines=String(text).split('\n');
 			const interactBtn=document.getElementById('guiInteractBtn');
-			if(interactBtn){interactBtn.textContent='[E] CONTINUE';interactBtn.style.display='block';}
+			if(this.dialogGateOpen && interactBtn){interactBtn.textContent='[E] CONTINUE';interactBtn.style.display='block';}
 			this.RENDER_DIALOG();
+			this.updateInteractUI();
 			this._messageResolve=resolve;
 		});
 	},
@@ -1024,12 +1030,19 @@ BLACK.GUI={
 		this.START_CURSOR_BLINK();
 		if(!this._bound){
 			document.addEventListener('keydown',e=>{
+				const confirm = e.key==='e'||e.key==='E'||e.key==='Enter';
+				// Dialog gate closed: RUN may already have queued PRINT/INPUT text (see
+				// dialogGateOpen), but nothing is shown and no key does anything except
+				// E/Enter/tap, which opens the gate via INTERACT() below.
+				if(!this.dialogGateOpen){
+					if(confirm) this.INTERACT();
+					return;
+				}
 				// INPUT mode: route keys into the live dialog buffer / Enter-to-submit path.
 				if(this.inputMode){
 					this._HANDLE_INPUT_KEY(e);
 					return;
 				}
-				const confirm = e.key==='e'||e.key==='E'||e.key==='Enter';
 				if(this.messageMode){
 					if(confirm) this.INTERACT();
 					return;
@@ -1046,6 +1059,7 @@ BLACK.GUI={
 			window.addEventListener('blur',()=>{this.keys={};});
 			this._bound=true;
 		}
+		this.updateInteractUI();
 		if(!this.raf) this.loop();
 	},
 	STOP(){
@@ -1096,6 +1110,13 @@ BLACK.GUI={
 	updateInteractUI(){
 		const btn=document.getElementById('guiInteractBtn');
 		if(!btn) return;
+		if(!this.dialogGateOpen){
+			const hasPending = this.dialogLines.length>0 || this.inputMode || this.messageMode;
+			btn.style.display = hasPending ? 'block' : 'none';
+			if(hasPending) btn.textContent='[E] START';
+			return;
+		}
+		if(this.inputMode||this.messageMode) return; // those modes manage the button themselves
 		if(this.nearDoor){
 			btn.style.display='block';
 			btn.textContent = this.doorUnlocked ? '[E] OPEN DOOR' : '[E] EXAMINE DOOR';
@@ -1109,6 +1130,19 @@ BLACK.GUI={
 	// range, it shows the door's own centered DIALOG message: whether it opens depends on
 	// doorUnlocked, which the CUI tutorial script sets via SETDOORKEY once all four trials are solved.
 	INTERACT(){
+		if(!this.dialogGateOpen){
+			this.dialogGateOpen=true;
+			this.RENDER_DIALOG();
+			this.updateInteractUI();
+			// If a trial's INPUT prompt was already queued (very likely -- RUN reaches it
+			// synchronously before the player can press anything), reveal it and hand focus
+			// to the hidden field now so mobile's on-screen keyboard appears immediately.
+			if(this.inputMode){
+				const field=document.getElementById('guiHiddenInput');
+				if(field) field.focus();
+			}
+			return;
+		}
 		if(this.messageMode){this.DISMISS_DIALOG();return;}
 		if(!this.active||!this.nearDoor) return;
 		const {x,y}=this.nearDoor;
@@ -2497,6 +2531,7 @@ BLACK.CUI={
 		out.style.color='#ccf';
 		out.textContent='';
 		BLACK.GUI.CLEARLOG();
+		BLACK.GUI.dialogGateOpen=false;
 		BLACK.SYS.ON('GUI');
 		try{
 			const js=MAGIC.compile(document.getElementById('code').value);
