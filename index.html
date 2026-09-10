@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html>
 <head>
@@ -13,7 +14,7 @@
 # Every reusable non-terminal maps to one get~ parser/compiler function.
 # All statements (control and flat) are dictionary dispatched from a single keyword read; block bodies are explicit.
 
-## Value
+## 1. Value
 <VALUE> ::= <NUMBER> | <STRING> | <VAR_REF> | <FUNCTION_CALL>
 Numeric storage: Float64Array for DIM numeric arrays.
 String storage: normal JavaScript strings/Array for string arrays.
@@ -24,21 +25,38 @@ String storage: normal JavaScript strings/Array for string arrays.
 # 0=False/non-zero=True for that one case; a genuine A=B comparison compiles to native JS
 # true/false via ===, and that boolean is only ever consumed by the if()/while() it was built for.
 
-## Program
+## 2. Program
 <PROGRAM> ::= <STMT>*
 <STMT> ::= <CTRL_STMT> | <CMD_STMT>
 # getStmt reads KEYWORD once and dispatches DIC.CTRL, then DIC.USER, then DIC.BUILTIN.
 # The dispatcher (not the individual get~ handler) consumes the leading keyword for every entry in DIC.CTRL/USER/BUILTIN.
 
-## Structured control
-<CTRL_STMT> ::= <FOR_STMT> | <IF_STMT> | <WHILE_STMT> | <SUB_STMT>
-# Each *_STMT handler below assumes its leading keyword ("FOR"/"IF"/"WHILE"/"SUB") was already consumed by getStmt; the BNF keyword tokens are shown for grammar reference only and are not re-read inside the handler.
+## 3. Structured control
+<CTRL_STMT> ::= <FOR_STMT> | <IF_STMT> | <WHILE_STMT> | <SUB_STMT> | <SCENE_STMT> | <EVENT_STMT>
+# Each *_STMT handler below assumes its leading keyword ("FOR"/"IF"/"WHILE"/"SUB"/"SCENE"/"EVENT") was already consumed by getStmt; the BNF keyword tokens are shown for grammar reference only and are not re-read inside the handler.
 <FOR_STMT> ::= "FOR" <VARIABLE> "=" <EXPR> "TO" <EXPR> ("STEP" <EXPR>)? <STMT>* "NEXT"
 <IF_STMT> ::= "IF" <COND> "THEN" <STMT>* ("ELSE" <STMT>*)? "ENDIF"
 <WHILE_STMT> ::= "WHILE" <COND> <STMT>* "WEND"
 <SUB_STMT> ::= "SUB" <VARIABLE> "(" (<VARIABLE> ("," <VARIABLE>)*)? ")" <STMT>* "ENDSUB"
+<SCENE_STMT> ::= "SCENE" <STMT>* "ENDSCENE"
+<EVENT_STMT> ::= "EVENT" <VARIABLE> <STMT>* "ENDEVENT"
+# EVENT (Phase 2, doc section 10): a zero-argument SUB with its own end keyword (see the
+# getEventStmt comment in script-magic for why ENDEVENT, not the doc's illustrative bare END). Like
+# SUB it registers into DIC.USER, so the event name alone is a valid CMD_STMT ("OPEN_TREASURE") in
+# addition to the explicit "CALL OPEN_TREASURE" form -- both compile to 'await OPEN_TREASURE();'.
+# See section 10 below for EVENT/CALL/GIVE/SETFLAG/CLEARFLAG/HASITEM/FLAG together.
 
-## Condition
+# SCENE is a plain sequencing block, not a new variable/loop scope: unlike SUB it does not push a
+# function boundary, so BREAK/CONTINUE (of an enclosing FOR/WHILE) and RETURN (of an enclosing SUB)
+# still work normally from inside it -- only SUB blocks that. Entering a SCENE calls
+# BLACK.GUI.SCENE_ENTER() and disables WASD movement and door interaction (but not DIALOG_ASYNC's
+# own E-to-continue dismissal) until BLACK.GUI.SCENE_EXIT() runs, guaranteed via try/finally even
+# if the block exits early via BREAK/CONTINUE/RETURN or a thrown error. It exists to compose
+# multiple already-blocking commands (PLAYMOVIE, DIALOG, SNDPLAYNOTE, PRINT, ...) into a single
+# "the player just watches/listens" cutscene, since none of those commands alone stop free-roam
+# movement.
+
+## 4. Condition
 <COND> ::= <OR_EXPR>
 <OR_EXPR> ::= <AND_EXPR> ("OR" <AND_EXPR>)*
 <AND_EXPR> ::= <NOT_EXPR> ("AND" <NOT_EXPR>)*
@@ -47,12 +65,22 @@ String storage: normal JavaScript strings/Array for string arrays.
 <REL_EXPR> ::= <EXPR> (<REL_OP> <EXPR>)?
 <REL_OP> ::= "=" | "<" | ">" | "<=" | ">=" | "<>"
 
-## Flat command extension point
+## 5. Flat command extension point
 <CMD_STMT> ::= <COMMAND>
 <COMMAND> ::= KEYWORD + command-specific argument grammar
 # Adding a flat command (registerCommand) or a new block control (registerControl) does not modify getStmt.
+# WAITZONE result, x1,y1,r1, x2,y2,r2 is one such extension command: it blocks (compiles to an
+# awaited call, like DIALOG/PLAYMOVIE) until the player walks within r1 of (x1,y1) or r2 of
+# (x2,y2), assigning 1 or 2 to `result` accordingly. Unlike SETTILE/PLAYMOVIE's tile/movie
+# arguments, the six numbers here are plain BASIC expressions the script itself supplies -- not
+# pre-authored Project data -- so there's no NAMES lookup involved; `result` just goes through the
+# same getVariable()/DECLARED_VARS path INPUT's target variable already does.
+# Pitfall: WAITZONE only checks distance, not direction of travel or elapsed movement, so a
+# TELEPORT immediately before it must land the player clear of both zones -- landing ON one (e.g.
+# reusing a "back" zone's coordinates as the round's start position) resolves WAITZONE on the very
+# next frame with no walking required at all.
 
-## Core commands
+## 6. Core commands
 <LET_STMT> ::= "LET" <VARIABLE> ("(" <EXPR_LIST> ")")? "=" <EXPR>
 <DIM_STMT> ::= "DIM" <VARIABLE> "(" <INTEGER_LIST> ")"
 <PRINT_STMT> ::= "PRINT" <EXPR_LIST>
@@ -65,7 +93,7 @@ String storage: normal JavaScript strings/Array for string arrays.
 # acknowledge-to-continue message box, not a value prompt.
 <REM_STMT> ::= "REM" <any text to newline>
 
-## Expression
+## 7. Expression
 <EXPR> ::= <TERM> (("+" | "-") <TERM>)*
 <TERM> ::= <POWER> (("*" | "/" | "MOD") <POWER>)*
 <POWER> ::= <FACTOR> ("^" <FACTOR>)*
@@ -74,7 +102,7 @@ String storage: normal JavaScript strings/Array for string arrays.
 <FUNCTION_CALL> ::= <FUNCTION> "(" <EXPR_LIST>? ")"
 <VAR_REF> ::= <VARIABLE> ("(" <EXPR_LIST> ")")?
 
-## Lists / terminals
+## 8. Lists / terminals
 <VARIABLE_LIST> ::= <VARIABLE> ("," <VARIABLE>)*
 <EXPR_LIST> ::= <EXPR> ("," <EXPR>)*
 <INTEGER_LIST> ::= <INTEGER> ("," <INTEGER>)*
@@ -83,14 +111,111 @@ String storage: normal JavaScript strings/Array for string arrays.
 <INTEGER> ::= non-negative integer
 <STRING> ::= quoted string
 
-## Built-in expression functions
+## 9. Semantic Name Resolution (Phase 1)
+# getResourceArg(code, ns) is a THIRD alternative to <EXPR>, used only by specific argument
+# positions of specific commands (currently: SETTILE's/SETFLOOR's/SETCEIL's tile argument against
+# the TILE namespace, PLAYMOVIE's argument against the MOVIE namespace). It resolves a bare
+# <VARIABLE> token to a literal Runtime Index string AT COMPILE TIME by looking it up in
+# MAGIC.NAMES[ns] (rebuilt every compile() from BLACK.GRAPHIC.SPRITES/.name and
+# BLACK.GRAPHIC.MOVIE.LIST/.name), and otherwise falls through to plain <EXPR> unchanged -- so a
+# numeric literal, an arithmetic expression, or a variable holding a computed index all still work
+# exactly as before this layer existed.
+# <RESOURCE_ARG> ::= (NAMESPACE ".")? NAME   where NAME must resolve in MAGIC.NAMES[NAMESPACE || ns]
+# The optional "NAMESPACE." prefix is recognized only inside getResourceArg (by peeking for an
+# immediately-adjacent "." + identifier), not by the tokenizer -- ID_RE/ID_CHK are deliberately left
+# untouched so ordinary <VARIABLE> parsing everywhere else in the grammar cannot pick up a stray dot.
+# SPRITE and TILE share one namespace/dictionary (a "tile" IS a sprite in this engine -- MAP cells
+# store a sprite index directly), so e.g. GOBLIN is reachable as SPRITE.GOBLIN or TILE.GOBLIN.
+# An unresolved qualified name (NS.NAME not found), or an unresolved bare name that also isn't a
+# variable seen so far this compile pass (MAGIC.DECLARED_VARS, populated by LET/DIM/INPUT/FOR/SUB-
+# params as they're parsed), is a genuine compile error (MAGIC.unknownNameError, with a same-
+# namespace "Did you mean?" suggestion when one exists). Such errors are marked e.fatal=true via
+# MAGIC.fatalError() and tryGet() re-throws fatal errors instead of swallowing them for backtracking
+# -- without that, the many other tryGet() call sites used for ordinary grammar backtracking would
+# catch and discard the error, surfacing only a confusing generic "unexpected token" instead.
+# WAVE/NOTE/TRACK names are NOT resolved by getResourceArg / at compile time: SOUND banks are only
+# populated once SNDLOAD actually runs (it's a script statement, not static Project data the
+# compiler can inspect ahead of time), so those three resolve at RUNTIME instead, inside
+# BLACK.SOUND.RESOLVE_NAME, and only when the argument is a quoted <STRING> (e.g.
+# SNDPLAYWAVE "vault","DOOR_OPEN") -- never a bare word -- specifically so a bare identifier can
+# still unambiguously mean "read this BASIC variable's numeric value" as it always has.
+# MAGIC.getProjectCatalog() returns a read-only, pixel/frame/waveform-free snapshot of every
+# currently-named SPRITE/TILE/MOVIE (from MAGIC.NAMES) plus WAVE/NOTE/TRACK (from the currently
+# loaded BLACK.SOUND.BANKS), each as {name, stableId, index, ...}, for AI/tooling consumption.
+
+## 10. Game State: Events, Items, Flags (Phase 2)
+<EVENT_STMT> is defined in section 3 above (CTRL_STMT); this section covers it together with the
+flat commands/functions that round out Phase 2 game state, since they're designed as one group.
+<GIVE_STMT> ::= "GIVE" <RESOURCE_ARG:ITEM>
+<SETFLAG_STMT> ::= "SETFLAG" <VARIABLE>
+<CLEARFLAG_STMT> ::= "CLEARFLAG" <VARIABLE>
+<CALL_STMT> ::= "CALL" <VARIABLE>
+# EVENT...ENDEVENT is a zero-argument, name-callable block -- a SUB in every respect (registers
+# into DIC.USER, so the bare name alone is already a valid CMD_STMT) except it closes with
+# ENDEVENT instead of ENDSUB, purely so a script reads as "this block is a hookable game event"
+# rather than "this is a reusable subroutine", even though the compiled JavaScript is identical
+# (an async function, invoked as `await NAME();`).
+# CALL is not a second calling mechanism -- `CALL OPEN_TREASURE` and bare `OPEN_TREASURE` compile
+# to the exact same 'await OPEN_TREASURE();'. Its only reason to exist is a clear compile-time
+# "Unknown EVENT/SUB: X" error (with the list of every EVENT name seen so far) instead of the
+# generic "unexpected token" a bare unknown identifier would otherwise produce.
+# GIVE's ITEM argument is static Project data authored ahead of time in the GAME/ITEM editor (same
+# as SPRITE/TILE/MOVIE), so it resolves to a Runtime Index at COMPILE TIME via getResourceArg,
+# exactly like SETTILE's tile argument (see section 9). SETFLAG/CLEARFLAG are the opposite case:
+# flags are free-form key/value state (BLACK.GAME.FLAGS), not a pre-authored dictionary resource --
+# any identifier becomes a valid flag the moment it's set, so these take a bare <VARIABLE> token
+# directly with no NAMES lookup and no "Unknown Name" error is possible or appropriate.
+# HASITEM("NAME") and FLAG("NAME") are <FUNCTION_CALL>s (section 7), not statements, so they take a
+# quoted <STRING> and resolve the name at RUNTIME (BLACK.GAME.HASITEM / BLACK.GAME.GETFLAG) --
+# registerFunction arguments always go through the generic <EXPR_LIST> grammar, which has no hook
+# for getResourceArg, so a bare word here stays unambiguously "read this BASIC variable" as it
+# always has. This is the same string-argument/runtime-resolve pattern SNDPLAYWAVE/SNDPLAYNOTE/
+# SNDPLAYTRACK already use for their WAVE/NOTE/TRACK arguments (BLACK.SOUND.RESOLVE_NAME, section 9).
+# CHARACTER/ENEMY (BLACK.GAME.ENTITIES) are named, Semantic-Name-resolvable data records (sprite,
+# hp, attack, speed, ai, attack_sound) with no runtime spawn/AI/combat behind them yet -- this
+# engine has no on-map moving-sprite renderer or combat loop. They exist so an AI/tool can author
+# and reference enemy data (e.g. from section 11's diff API) ahead of that gameplay layer being
+# built, not because that layer already exists.
+
+## 11. AI Project Edit / Diff Operations (Phase 3)
+# A name-addressed CRUD API (MAGIC.CREATE/MODIFY/RENAME/DELETE/applyDiff/validateProject, plus the
+# read-only MAGIC.getProjectCatalog from section 9) so an AI or tool can edit the Project -- add,
+# change, rename, or remove SPRITE/TILE/MOVIE/ITEM/CHARACTER/ENEMY resources -- without ever
+# generating raw JavaScript or touching a Runtime Index directly. This is the same
+# "don't make an AI generate raw JavaScript as the primary editing path" principle behind
+# getResourceArg (section 9) applied to editing the Project itself, not just gameplay scripts.
+# Every op is addressed by Semantic Name; CREATE/RENAME assign/keep the stableId, the caller never
+# supplies or changes one directly.
+# CREATE(type, name, attrs) -- type one of SPRITE/TILE/MOVIE/ITEM/CHARACTER/ENEMY (TILE is an alias
+#   for SPRITE, section 9). Fails if the name already exists in that resource's namespace.
+# MODIFY(type, name, field, value) -- sets one field on an existing record. Refuses field==="name"
+#   (use RENAME) and field==="stableId" (permanent by design).
+# RENAME(type, name, newName) -- changes only the display Semantic Name; stableId, and therefore
+#   every existing reference (MAP cells, MOVIE frames, compiled scripts), is untouched.
+# DELETE(type, name) -- for SPRITE/TILE specifically, refuses to delete a sprite still referenced by
+#   MAP cells, MAP floor/ceiling, or any MOVIE's frames (deleting a live index would silently
+#   repoint every later index down by one), and otherwise reindexes every remaining raw-index
+#   reference above the deleted slot to compensate. ITEM/MOVIE/CHARACTER/ENEMY deletion has no such
+#   raw-index fallout to manage.
+# applyDiff(ops) -- applies a JSON array of {op:"CREATE"|"MODIFY"|"RENAME"|"DELETE", type, name, ...}
+#   objects in order, e.g. [{"op":"CREATE","type":"ITEM","name":"GOLD_COIN"},
+#   {"op":"MODIFY","type":"ENEMY","name":"GOBLIN","field":"hp","value":40}]. NOT transactional:
+#   each op is tried independently and reports its own {ok,error}, so one failing op (e.g. a
+#   duplicate name) does not roll back ops already applied earlier in the same batch -- callers
+#   needing all-or-nothing semantics should call validateProject() first and inspect every op's
+#   result before trusting a partial batch.
+# validateProject() -- duplicate-name and dangling-reference checks (buildNames, section 9, already
+#   enforces per-namespace uniqueness as names are built; this additionally reports issues like an
+#   ITEM referenced by nothing, or other structural problems that aren't compile errors on their own).
+
+## 12. Built-in expression functions
 ABS INT SGN SQR SIN COS TAN ASIN ACOS ATN EXP LOG LOG10 RND PI
 LEN LEFT$ RIGHT$ MID$ STR$ VAL MIN MAX
 
-## Structured command set
-LET DIM PRINT INPUT REM END STOP BREAK CONTINUE RETURN
+## 13. Structured command set
+LET DIM PRINT INPUT DIALOG REM END STOP BREAK CONTINUE RETURN GIVE SETFLAG CLEARFLAG CALL
 
-## Compiler mapping
+## 14. Compiler mapping
 <X> ::= A B C  -> getX calls getA/getB/getC in sequence.
 <X> ::= A | B  -> tryGet A then B; failed alternatives restore input position.
 <X>* -> repeat until the next token cannot form X.
@@ -100,11 +225,13 @@ SUB definitions are registered into DIC.USER immediately; forward references are
 <script type="text/doc" id="ai-instructions">
 # AI EDITING INSTRUCTIONS for this file (fixed policy; follow unless the user explicitly overrides)
 1. Indentation: all JavaScript inside <script> tags uses TAB characters, one tab per nesting level. Never use spaces for indentation.
-2. Script separation: JavaScript is split into one <script> tag per feature/module (script-core, script-sys, script-gui, script-graphic, script-map, script-movie, script-sound, script-server, script-cui, script-magic). Do not merge unrelated features back into a single script tag; add a new <script id="script-XXX"> for a genuinely new feature area instead. Sub-features nested under a parent module (e.g. script-map/script-movie under BLACK.GRAPHIC) still get their own script tag, executing after the parent tag so `BLACK.PARENT` already exists.
+2. Script separation: JavaScript is split into one <script> tag per feature/module (script-core, script-sys, script-gui, script-graphic, script-map, script-movie, script-sound, script-game, script-server, script-cui, script-magic). Do not merge unrelated features back into a single script tag; add a new <script id="script-XXX"> for a genuinely new feature area instead. Sub-features nested under a parent module (e.g. script-map/script-movie under BLACK.GRAPHIC) still get their own script tag, executing after the parent tag so `BLACK.PARENT` already exists.
 3. Namespace: every feature attaches itself to the shared `BLACK` object as `BLACK.NAME={...}` (NAME matches the script id, e.g. BLACK.SOUND). `const BLACK={}` is declared once, in script-core, before any feature script runs.
 4. Styling: do not add new CSS classes or rules to <style>. Only .base and .unit exist there. Any element-specific appearance is written as an explicit inline style="..." attribute on that tag, not as a new class. Marker classes with no CSS rule (e.g. "unit row", "unit panel") may be combined with .unit for readability, but must never gain their own <style> entry.
 5. This head also contains a grammar/BNF reference doc (id="doc") for the BASIC language implemented by script-magic; keep it in sync whenever the parser/compiler grammar changes.
 6. Keep this instructions block itself up to date if the file's structural conventions change.
+7. Semantic Name / Stable ID layer (see the "Semantic Name Resolution" section of the doc block above): SPRITE, MOVIE, ITEM, CHARACTER, ENEMY, WAVE and TRACK list items carry a `name` (uppercase, AI/human-facing, may be '') and SPRITE/MOVIE/ITEM/CHARACTER/ENEMY also carry a `stableId` (permanent, assigned once via a module-local `nextStableId()`, never changed by rename/reorder). Runtime storage (MAP.DATA cells, MOVIE frames, SOUND bank indices, GAME.inventory) stays plain integers -- never store a name or stableId where a Runtime Index is expected. Any new name-referenceable resource type added later should follow the same pattern: a `name`/`stableId` field on the data record, a `migrateNames()` to backfill old Project JSON, a `RENAME()` that changes only `name`, and (only if the resource is static Project data available before compile, like SPRITE/MOVIE/ITEM/CHARACTER/ENEMY -- NOT if it's populated at Runtime by a script statement, like SOUND banks) an entry in MAGIC.NAMES resolved via MAGIC.getResourceArg at compile time.
+8. Phase 2 scope note (CHARACTER/ENEMY/MAP): this engine is a single-map, first-person raycast dungeon crawler with no on-map moving-sprite renderer and no combat loop (see script-gui). CHARACTER/ENEMY (script-game, BLACK.GAME.ENTITIES) are therefore a pure DATA layer -- named records with the doc's attributes (sprite/hp/attack/speed/ai/attack_sound), Semantic-Name-resolvable, but with no SPAWN/AI/combat runtime behind them; do not add one without discussing the scope with the user first, since it's a large new engine feature, not a naming-layer addition. Likewise MAP is not a separate Semantic Name namespace: this engine has exactly one map, and per-cell naming already went through the TILE namespace in Phase 1 (SETTILE STONE_WALL) -- multi-map/AREA support is, again, a large new feature outside this layer's scope.
 </script>
 </head>
 <body class="base" oncontextmenu="return false;" onload="BLACK.SYS.INIT()">
@@ -114,6 +241,7 @@ SUB definitions are registered into DIC.USER immediately; forward references are
 <button class="unit" data-tab="GUI" onclick="BLACK.SYS.ON('GUI')">GUI</button>
 <button class="unit" data-tab="GRAPHIC" onclick="BLACK.SYS.ON('GRAPHIC')">GRAPHIC</button>
 <button class="unit" data-tab="SOUND" onclick="BLACK.SYS.ON('SOUND')">SOUND</button>
+<button class="unit" data-tab="GAME" onclick="BLACK.SYS.ON('GAME')">GAME</button>
 <button class="unit" data-tab="SERVER" onclick="BLACK.SYS.ON('SERVER')">SERVER</button>
 <button class="unit" data-tab="USER" onclick="BLACK.SYS.ON('USER')">USER</button>
 <button class="unit" data-tab="PROJECT" onclick="BLACK.SYS.ON('PROJECT')">PROJECT</button>
@@ -136,16 +264,23 @@ REM --- authored on the GRAPHIC pages, by index only.    ---
 SETFLOOR 1
 SETCEIL 2
 TELEPORT 4.5, 8.5, 0
-PLAYMOVIE 0
 
 REM --- SOUND bridge: load three cues (correct/wrong/win) ---
 LET MML$ = "MASTER BPM=140 VOL=80\nWAVE 0 OSC1=TRIANGLE USE2=0 OSC2=SQUARE COMBINE=ADD FILTER=LOW CUTOFF=1800 Q=6 A=5 D=120 S=40 R=180\nWAVE 1 OSC1=SQUARE USE2=0 OSC2=SQUARE COMBINE=ADD FILTER=LOW CUTOFF=500 Q=3 A=1 D=90 S=0 R=60\nWAVE 2 OSC1=SQUARE USE2=1 OSC2=TRIANGLE COMBINE=ADD FILTER=LOW CUTOFF=4000 Q=4 A=2 D=140 S=50 R=220\nNOTE 0 STEPS=8 BAR=8 DATA=C4,,E4,,G4,,C5,\nNOTE 1 STEPS=1 BAR=4 DATA=A2\nNOTE 2 STEPS=8 BAR=8 DATA=C4,E4,G4,C5,E5,G5,C6,\nTRACK 0 WAVE=0 NOTE=0 VOL=100 PAN=0\nTRACK 1 WAVE=1 NOTE=1 VOL=90 PAN=0\nTRACK 2 WAVE=2 NOTE=2 VOL=100 PAN=0"
 SNDLOAD "vault", MML$
 
+REM --- Intro cutscene: SCENE...ENDSCENE locks WASD movement and door interaction  ---
+REM --- for its whole body, so the player can't wander off or test the vault door  ---
+REM --- while the movie/narration are playing. PLAYMOVIE itself already blocks     ---
+REM --- until playback finishes (see the SCENE_STMT/PLAYMOVIE notes in the grammar ---
+REM --- doc above), so the three PRINT lines only appear after the movie is done.  ---
+SCENE
+PLAYMOVIE 0
 PRINT "You wake up in a stone vault. A locked gold door blocks"
 PRINT "the only way out. Four trials stand between you and"
 PRINT "freedom - each one teaches a piece of BASIC."
 PRINT ""
+ENDSCENE
 
 REM ===== Trial 1: LET + PRINT + arithmetic =====
 PRINT "TRIAL 1 - THE LOCK CODE"
@@ -237,7 +372,14 @@ PRINT ""
 REM ===== Victory: unlock the door for the GUI interact system =====
 SETDOORKEY 1
 SNDPLAYNOTE "vault", 2, 2
-DIALOG "All four bolts are open! The vault door is unlocked.\nWalk up to the gold door and press E (or tap the on-screen button) to swing it open."</textarea>
+PRINT "All four bolts are open! The vault door is unlocked."
+PRINT "Open the GUI tab, walk up to the gold door, and press"
+PRINT "E (or tap the on-screen button) to swing it open."
+REM DIALOG (not PRINT) here so pressing E both acknowledges the win and clears the
+REM dialog overlay (DISMISS_DIALOG empties it) -- otherwise the box, still full of
+REM this trial's scrollback, would keep covering part of the view while walking to
+REM the door, since nothing else ever clears it.
+DIALOG "All four bolts are open! The vault door is unlocked.\nOpen the GUI tab, walk up to the gold door, and press\nE (or tap the on-screen button) to swing it open."</textarea>
 <pre id="out" class="unit"></pre>
 </div>
 <div id="GUI" class="unit panel" style="display:none">
@@ -245,10 +387,21 @@ DIALOG "All four bolts are open! The vault door is unlocked.\nWalk up to the gol
 <!-- guiViewport is the positioning root for the canvas overlay: guiDialog is absolutely
      centered over the canvas (not placed below it) so PRINT scrollback, INPUT prompts, and
      DIALOG messages all render as an overlay on top of the first-person view instead of a
-     separate panel under the screen. -->
+     separate panel under the screen.
+     guiDialog's height budget is fixed in px, not "max-height:80%": that left the real per-line
+     height up to the browser's default line-height for 12px monospace, which measured out to far
+     more than expected (~27px/line in testing), so only ~7 rows actually fit -- one of them the
+     [E]/[ENTER] hint row -- silently clipping whatever content didn't fit (a SUB printing four
+     short lines right before an INPUT prompt could have the earliest 1-2 of them scrolled out of
+     view the instant the prompt appeared, since the box always auto-scrolls to the bottom). See
+     BLACK.GUI.MAX_DIALOG_LINES for the JS-side line budget this height is sized to match: 8
+     content rows + 1 hint row = 9, plus one spare row of slack for a long PRINT line wrapping to
+     two visual rows. line-height:15px makes the per-row height an explicit, known quantity
+     instead of an implicit browser default, so the CSS budget (10*15=150px) and the JS line cap
+     actually agree on how many rows fit. -->
 <div id="guiViewport" style="position:relative;width:360px">
 <canvas id="screen" class="unit" width="360" height="240" style="display:block"></canvas>
-<div id="guiDialog" class="unit" style="display:none;position:absolute;left:8px;right:8px;top:50%;transform:translateY(-50%);background:#000;opacity:0.88;font-family:monospace;font-size:12px;white-space:pre-wrap;max-height:80%;overflow-y:auto;text-align:left;pointer-events:auto" onclick="BLACK.GUI.FOCUS_INPUT()">
+<div id="guiDialog" class="unit" style="display:none;position:absolute;left:8px;right:8px;top:50%;transform:translateY(-50%);background:#000;opacity:0.88;font-family:monospace;font-size:12px;line-height:15px;white-space:pre-wrap;max-height:150px;overflow-y:auto;text-align:left;pointer-events:auto" onclick="BLACK.GUI.FOCUS_INPUT()">
 <input id="guiHiddenInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none" oninput="BLACK.GUI._ECHO_INPUT()" onkeydown="BLACK.GUI._HIDDEN_KEYDOWN(event)">
 <span id="guiDialogText"></span>
 <div id="guiDialogKeyHint" style="text-align:right;opacity:0.7"></div>
@@ -292,6 +445,10 @@ DIALOG "All four bolts are open! The vault door is unlocked.\nWalk up to the gol
 <button class="unit" onclick="BLACK.GRAPHIC.NEW()">NEW</button>
 <button class="unit" id="gfxFillBtn" onclick="BLACK.GRAPHIC.TOGGLE_FILL()">FILL</button>
 </div>
+<div class="unit row" style="border-color:#66F">
+<label>NAME: </label><input type="text" id="gfxSpriteName" class="unit" placeholder="e.g. GOBLIN" onchange="BLACK.GRAPHIC.RENAME(this.value)">
+<span id="gfxSpriteStableId" class="unit" style="opacity:0.6;font-size:11px"></span>
+</div>
 <div id="gfxPalettePick"></div>
 <div id="gfxTable"></div>
 </div>
@@ -309,6 +466,10 @@ DIALOG "All four bolts are open! The vault door is unlocked.\nWalk up to the gol
 <div class="unit row" style="border-color:#66F">
 <label>MOVIE: </label><select id="movieList" class="unit" onchange="BLACK.GRAPHIC.MOVIE.SELECT()"></select>
 <button class="unit" onclick="BLACK.GRAPHIC.MOVIE.NEW()">NEW</button>
+</div>
+<div class="unit row" style="border-color:#66F">
+<label>NAME: </label><input type="text" id="movieName" class="unit" placeholder="e.g. DOOR_OPEN" onchange="BLACK.GRAPHIC.MOVIE.RENAME(this.value)">
+<span id="movieStableId" class="unit" style="opacity:0.6;font-size:11px"></span>
 </div>
 <div class="unit row" style="border-color:#66F">
 <label>TIME/FRAME: </label><input type="range" id="movieTime" min="30" max="1000" value="200" oninput="BLACK.GRAPHIC.MOVIE.UPDATE()">
@@ -342,6 +503,9 @@ DIALOG "All four bolts are open! The vault door is unlocked.\nWalk up to the gol
 <button class="unit" onclick="BLACK.SOUND.WAVE.NEW()">NEW</button>
 <button class="unit" onclick="BLACK.SOUND.WAVE.PLAY()">PLAY</button>
 <button class="unit" onclick="BLACK.SOUND.WAVE.STOP()">STOP</button>
+</div>
+<div class="unit row" style="border-color:#66F">
+<label>NAME: </label><input type="text" id="waveName" class="unit" placeholder="e.g. DOOR_OPEN" onchange="BLACK.SOUND.WAVE.RENAME(this.value)">
 </div>
 <div class="unit row" style="border-color:#66F">
 <label>OSC1: </label><select id="waveOsc1" class="unit" onchange="BLACK.SOUND.WAVE.UPDATE()">
@@ -410,6 +574,9 @@ DIALOG "All four bolts are open! The vault door is unlocked.\nWalk up to the gol
 <button class="unit" onclick="BLACK.SOUND.TRACK.NEW()">NEW</button>
 </div>
 <div class="unit row" style="border-color:#66F">
+<label>NAME: </label><input type="text" id="trackName" class="unit" placeholder="e.g. BATTLE" onchange="BLACK.SOUND.TRACK.RENAME(this.value)">
+</div>
+<div class="unit row" style="border-color:#66F">
 <label>WAVE: </label><select id="trackWave" class="unit" onchange="BLACK.SOUND.TRACK.UPDATE()"></select>
 <label>NOTE: </label><select id="trackNote" class="unit" onchange="BLACK.SOUND.TRACK.UPDATE()"></select>
 <button class="unit" onclick="BLACK.SOUND.TRACK.PLAY()">PLAY</button>
@@ -445,6 +612,54 @@ DIALOG "All four bolts are open! The vault door is unlocked.\nWalk up to the gol
 <textarea id="mmlText" class="unit" rows="4" style="width:100%"></textarea>
 </div>
 </div>
+<div id="GAME" class="unit panel" style="display:none">
+<h4>GAME</h4>
+<div id="navGAME" class="unit row" style="border-color:#99F">
+<button class="unit" data-tab="ITEM" onclick="BLACK.GAME.PAGE('ITEM')">ITEM</button>
+<button class="unit" data-tab="ENTITY" onclick="BLACK.GAME.PAGE('ENTITY')">CHARACTER/ENEMY</button>
+</div>
+<div id="GAME_ITEM" class="unit panel" style="display:none;border-color:#99F">
+<div class="unit row" style="border-color:#66F">
+<label>ITEM: </label><select id="itemList" class="unit" onchange="BLACK.GAME.SELECT_ITEM()"></select>
+<button class="unit" onclick="BLACK.GAME.NEW_ITEM()">NEW</button>
+</div>
+<div class="unit row" style="border-color:#66F">
+<label>NAME: </label><input type="text" id="itemName" class="unit" placeholder="e.g. SILVER_KEY" onchange="BLACK.GAME.RENAME_ITEM(this.value)">
+<span id="itemStableId" class="unit" style="opacity:0.6;font-size:11px"></span>
+</div>
+<div class="unit row" style="border-color:#66F">
+<label>DESC: </label><input type="text" id="itemDesc" class="unit" style="width:60%" onchange="BLACK.GAME.SET_ITEM_DESC(this.value)">
+</div>
+</div>
+<div id="GAME_ENTITY" class="unit panel" style="display:none;border-color:#99F">
+<div class="unit row" style="border-color:#66F">
+<label>ENTITY: </label><select id="entityList" class="unit" onchange="BLACK.GAME.SELECT_ENTITY()"></select>
+<button class="unit" onclick="BLACK.GAME.NEW_ENTITY()">NEW</button>
+</div>
+<div class="unit row" style="border-color:#66F">
+<label>NAME: </label><input type="text" id="entityName" class="unit" placeholder="e.g. GOBLIN" onchange="BLACK.GAME.RENAME_ENTITY(this.value)">
+<span id="entityStableId" class="unit" style="opacity:0.6;font-size:11px"></span>
+</div>
+<div class="unit row" style="border-color:#66F">
+<label>KIND: </label><select id="entityKind" class="unit" onchange="BLACK.GAME.SET_ENTITY_FIELD('kind',this.value)">
+<option value="ENEMY">ENEMY</option><option value="CHARACTER">CHARACTER</option>
+</select>
+<label>SPRITE NAME: </label><input type="text" id="entitySprite" class="unit" placeholder="matches a named SPRITE" onchange="BLACK.GAME.SET_ENTITY_FIELD('spriteName',this.value)">
+</div>
+<div class="unit row" style="border-color:#66F">
+<label>HP: </label><input type="number" id="entityHp" class="unit" style="width:60px" onchange="BLACK.GAME.SET_ENTITY_FIELD('hp',this.value)">
+<label>ATTACK: </label><input type="number" id="entityAttack" class="unit" style="width:60px" onchange="BLACK.GAME.SET_ENTITY_FIELD('attack',this.value)">
+<label>SPEED: </label><input type="number" id="entitySpeed" class="unit" style="width:60px" onchange="BLACK.GAME.SET_ENTITY_FIELD('speed',this.value)">
+</div>
+<div class="unit row" style="border-color:#66F">
+<label>AI: </label><select id="entityAi" class="unit" onchange="BLACK.GAME.SET_ENTITY_FIELD('ai',this.value)">
+<option value="STATIC">STATIC</option><option value="CHASE">CHASE</option><option value="WANDER">WANDER</option>
+</select>
+<label>ATTACK SOUND (WAVE NAME): </label><input type="text" id="entityAttackSound" class="unit" onchange="BLACK.GAME.SET_ENTITY_FIELD('attackSoundName',this.value)">
+</div>
+<p class="unit" style="opacity:0.6;font-size:11px;border:none">Note: this is data only -- ENEMY/CHARACTER records are Semantic-Name-resolvable but there is no spawn/AI/combat runtime yet (this engine has no on-map moving-sprite renderer).</p>
+</div>
+</div>
 <div id="SERVER" class="unit panel" style="display:none">
 <h4>SERVER</h4>
 <div>Server / network extension point</div>
@@ -466,14 +681,27 @@ No server module connected.</pre>
 </div>
 <div id="PROJECT" class="unit panel" style="display:none">
 <h4>PROJECT</h4>
-<div>Bundles GRAPHIC (palette/sprites/map/movie) + SOUND (waves/notes/tracks/master) + the CUI program into one JSON blob, so the whole app can be saved, shared, and reloaded as a single integrated project.</div>
+<div>Bundles GRAPHIC (palette/sprites/map/movie) + SOUND (waves/notes/tracks/master) + GAME (items/entities) + the CUI program into one JSON blob, so the whole app can be saved, shared, and reloaded as a single integrated project.</div>
 <div class="unit row" style="border-color:#99F">
 <button class="unit" onclick="BLACK.SYS.PROJECT.EXPORT()">EXPORT</button>
 <button class="unit" onclick="BLACK.SYS.PROJECT.IMPORT()">IMPORT</button>
 <button class="unit" onclick="BLACK.SYS.PROJECT.LOAD_SAMPLE()">LOAD SAMPLE</button>
+<button class="unit" onclick="BLACK.SYS.PROJECT.LOAD_SAMPLE_EXIT8()">LOAD THE LOOP SAMPLE</button>
 </div>
 <textarea id="projectText" class="unit" cols="80" rows="12" placeholder="Click EXPORT to dump the current project as JSON here, or paste a saved project JSON and click IMPORT."></textarea>
 <pre id="projectOut" class="unit">READY</pre>
+<h4>AI / Semantic Name tools (Phase 3)</h4>
+<div>getProjectCatalog(): a read-only, pixel/frame/waveform-free snapshot of every currently-named resource, for an AI to see "what exists" before editing. applyDiff(): the diff-operation API from instruction doc section 11 (CREATE/MODIFY/RENAME/DELETE, addressed by name, never by raw array index) for an AI or tool to edit the Project without generating raw JavaScript. validateProject(): duplicate-name and dangling-reference checks.</div>
+<div class="unit row" style="border-color:#99F">
+<button class="unit" onclick="BLACK.SYS.AI.SHOW_CATALOG()">SHOW CATALOG</button>
+<button class="unit" onclick="BLACK.SYS.AI.VALIDATE()">VALIDATE PROJECT</button>
+</div>
+<div>Diff ops as a JSON array, e.g. [{"op":"CREATE","type":"ITEM","name":"GOLD_COIN"},{"op":"MODIFY","type":"ENEMY","name":"GOBLIN","field":"hp","value":40}]</div>
+<textarea id="diffText" class="unit" cols="80" rows="6" placeholder='[{"op":"CREATE","type":"ITEM","name":"GOLD_COIN"}]'></textarea>
+<div class="unit row" style="border-color:#99F">
+<button class="unit" onclick="BLACK.SYS.AI.APPLY_DIFF()">APPLY DIFF</button>
+</div>
+<pre id="aiOut" class="unit">READY</pre>
 </div>
 <script id="script-core">
 // CORE: shared namespace object populated by the feature scripts below
@@ -482,7 +710,7 @@ const BLACK={};
 <script id="script-sys">
 // SYS: boot sequence and top-level page/mode switching
 BLACK.SYS={
-	UI:['CUI','GUI','GRAPHIC','SOUND','SERVER','USER','PROJECT'],
+	UI:['CUI','GUI','GRAPHIC','SOUND','GAME','SERVER','USER','PROJECT'],
 	// Shared status-text helper: 'err'/'ok' marker classes carry no CSS rule by design (see
 	// ai-instructions #4), so color feedback is applied as an explicit inline style here instead
 	// of adding new CSS classes/rules. state: 'ok' | 'err' | undefined (neutral).
@@ -509,6 +737,7 @@ BLACK.SYS={
 		if(name==='GUI'){BLACK.GUI.START();}else{BLACK.GUI.STOP();}
 		if(name==='GRAPHIC') BLACK.GRAPHIC.PAGE(BLACK.GRAPHIC.curPage);
 		if(name==='SOUND') BLACK.SOUND.PAGE(BLACK.SOUND.curPage);
+		if(name==='GAME') BLACK.GAME.PAGE(BLACK.GAME.curPage);
 		if(name==='PROJECT') BLACK.SYS.PROJECT.EXPORT();
 	},
 	INIT(){
@@ -520,6 +749,7 @@ BLACK.SYS={
 		if(sel) sel.addEventListener('change',()=>BLACK.SERVER.LOG());
 		BLACK.GRAPHIC.INIT();
 		BLACK.SOUND.INIT();
+		BLACK.GAME.INIT();
 		this.PROJECT.APPLY(this.PROJECT.SAMPLE());
 		this.ON('CUI');
 	},
@@ -540,6 +770,10 @@ BLACK.SYS={
 					notes:S.NOTE.LIST,
 					tracks:S.TRACK.LIST,
 					master:{bpm:S.MASTER.bpm,vol:S.MASTER.vol}
+				},
+				game:{
+					items:BLACK.GAME.ITEMS,
+					entities:BLACK.GAME.ENTITIES
 				}
 			};
 		},
@@ -588,6 +822,17 @@ BLACK.SYS={
 				S.TRACK.REFRESH();
 				S.MASTER.REFRESH();
 			}
+			// game.items/entities are Project data (authored ITEM/ENEMY/CHARACTER records), so they're
+			// restored here; inventory/FLAGS are transient play-session state and intentionally NOT
+			// persisted, matching how BLACK.GUI.player position also resets on load rather than saving.
+			BLACK.GAME.ITEMS = (data.game&&data.game.items&&data.game.items.length)?data.game.items:[];
+			BLACK.GAME.curItem = BLACK.GAME.ITEMS.length?0:-1;
+			BLACK.GAME.ENTITIES = (data.game&&data.game.entities&&data.game.entities.length)?data.game.entities:[];
+			BLACK.GAME.curEntity = BLACK.GAME.ENTITIES.length?0:-1;
+			BLACK.GAME.inventory = [];
+			BLACK.GAME.FLAGS = {};
+			BLACK.GAME.REFRESH_ITEM();
+			BLACK.GAME.REFRESH_ENTITY();
 		},
 		EXPORT(){
 			const t=document.getElementById('projectText');
@@ -634,8 +879,10 @@ BLACK.SYS={
 				{size,pixels:new Array(size*size).fill(palette[5])}       // 3: vault door (locked)
 			];
 			// MAP: a 16x16 vault split into two chambers by an interior wall at x=8, with a single
-			// locked-door gap (sprite 3) at (8,8). The CUI tutorial game opens it via
-			// SETTILE 8, 8, -1 once all four trials are solved, matching how open floor cells are
+			// locked-door gap (sprite 3) at (8,8). The CUI script itself only calls SETDOORKEY 1
+			// once all four trials are solved; the actual tile write (opening the door) happens in
+			// BLACK.GUI.INTERACT(), which calls BLACK.GRAPHIC.MAP.SET(x,y,-1) directly when the
+			// player presses E next to an unlocked door -- matching how open floor cells are
 			// already encoded as -1 (see MAP.isWall).
 			const mapSize=16;
 			const mapData=new Array(mapSize*mapSize).fill(-1);
@@ -672,16 +919,23 @@ BLACK.SYS={
 				'SETFLOOR 1',
 				'SETCEIL 2',
 				'TELEPORT 4.5, 8.5, 0',
-				'PLAYMOVIE 0',
 				'',
 				'REM --- SOUND bridge: load three cues (correct/wrong/win) ---',
 				'LET MML$ = "MASTER BPM=140 VOL=80\\nWAVE 0 OSC1=TRIANGLE USE2=0 OSC2=SQUARE COMBINE=ADD FILTER=LOW CUTOFF=1800 Q=6 A=5 D=120 S=40 R=180\\nWAVE 1 OSC1=SQUARE USE2=0 OSC2=SQUARE COMBINE=ADD FILTER=LOW CUTOFF=500 Q=3 A=1 D=90 S=0 R=60\\nWAVE 2 OSC1=SQUARE USE2=1 OSC2=TRIANGLE COMBINE=ADD FILTER=LOW CUTOFF=4000 Q=4 A=2 D=140 S=50 R=220\\nNOTE 0 STEPS=8 BAR=8 DATA=C4,,E4,,G4,,C5,\\nNOTE 1 STEPS=1 BAR=4 DATA=A2\\nNOTE 2 STEPS=8 BAR=8 DATA=C4,E4,G4,C5,E5,G5,C6,\\nTRACK 0 WAVE=0 NOTE=0 VOL=100 PAN=0\\nTRACK 1 WAVE=1 NOTE=1 VOL=90 PAN=0\\nTRACK 2 WAVE=2 NOTE=2 VOL=100 PAN=0"',
 				'SNDLOAD "vault", MML$',
 				'',
+				'REM --- Intro cutscene: SCENE...ENDSCENE locks WASD movement and door interaction  ---',
+				'REM --- for its whole body, so the player can\'t wander off or test the vault door  ---',
+				'REM --- while the movie/narration are playing. PLAYMOVIE itself already blocks     ---',
+				'REM --- until playback finishes (see the SCENE_STMT/PLAYMOVIE notes in the grammar ---',
+				'REM --- doc above), so the three PRINT lines only appear after the movie is done.  ---',
+				'SCENE',
+				'PLAYMOVIE 0',
 				'PRINT "You wake up in a stone vault. A locked gold door blocks"',
 				'PRINT "the only way out. Four trials stand between you and"',
 				'PRINT "freedom - each one teaches a piece of BASIC."',
 				'PRINT ""',
+				'ENDSCENE',
 				'',
 				'REM ===== Trial 1: LET + PRINT + arithmetic =====',
 				'PRINT "TRIAL 1 - THE LOCK CODE"',
@@ -773,7 +1027,14 @@ BLACK.SYS={
 				'REM ===== Victory: unlock the door for the GUI interact system =====',
 				'SETDOORKEY 1',
 				'SNDPLAYNOTE "vault", 2, 2',
-				'DIALOG "All four bolts are open! The vault door is unlocked.\\nWalk up to the gold door and press E (or tap the on-screen button) to swing it open."'
+				'PRINT "All four bolts are open! The vault door is unlocked."',
+				'PRINT "Open the GUI tab, walk up to the gold door, and press"',
+				'PRINT "E (or tap the on-screen button) to swing it open."',
+				'REM DIALOG (not PRINT) here so pressing E both acknowledges the win and clears the',
+				'REM dialog overlay (DISMISS_DIALOG empties it) -- otherwise the box, still full of',
+				'REM this trial\'s scrollback, would keep covering part of the view while walking to',
+				'REM the door, since nothing else ever clears it.',
+				'DIALOG "All four bolts are open! The vault door is unlocked.\\nOpen the GUI tab, walk up to the gold door, and press\\nE (or tap the on-screen button) to swing it open."'
 			].join('\n');
 			return {
 				version:1,
@@ -799,6 +1060,257 @@ BLACK.SYS={
 			if(t) t.value=JSON.stringify(sample,null,1);
 			const out=document.getElementById('projectOut');
 			BLACK.SYS.STATUS(out,'VAULT ESCAPE sample loaded\nOpen CUI and press RUN to play the tutorial (solve 4 trials).\nThen open GUI, walk to the gold door and press E to open it.','ok');
+		},
+		// ==== THE LOOP: a small "walk the corridor, spot the anomaly" demo game ====
+		// Built to exercise every Phase 1/2 feature together rather than just the ones VAULT ESCAPE
+		// already covers: Semantic Name Resolution (SETTILE/PLAYMOVIE by name), SCENE (locks movement
+		// during the walk-in narration and the wrong-answer "glitch"), EVENT+CALL (ON_CORRECT/
+		// ON_WRONG/ON_WIN), GIVE+HASITEM (a one-time MEMO pickup), SETFLAG+FLAG (CLEARED_ONCE persists
+		// across repeated RUNs in the same session), and WAITZONE (the actual decision mechanic: which
+		// end of the corridor the player walks to, not a typed answer).
+		buildSign(size,dir){
+			// A green exit sign with a white arrow; dir 'right' (correct, matches the exit's real
+			// direction) or 'left' (the anomaly: the arrow silently points the wrong way).
+			const px=new Array(size*size);
+			const bg='#1a7a3c', border='#0d4d24', arrow='#ffffff';
+			const apexRight=size-4, apexLeft=3;
+			for(let y=0;y<size;y++){
+				const cy=Math.abs(y-(size-1)/2);
+				for(let x=0;x<size;x++){
+					let c=bg;
+					if(x===0||x===size-1||y===0||y===size-1){
+						c=border;
+					} else {
+						const d=(dir==='right')?(apexRight-x):(x-apexLeft);
+						if(d>=0 && cy<=d*0.85) c=arrow;
+					}
+					px[y*size+x]=c;
+				}
+			}
+			return px;
+		},
+		buildStaticNoise(size,seedOffset){
+			// Deterministic (not RND-based) pseudo-noise for the PLAYMOVIE "glitch" flicker played on
+			// a wrong answer -- two different offsets give two visually distinct frames to flicker
+			// between, without needing an actual random/animated texture system.
+			const colors=['#000000','#ffffff','#8a8a8a','#d0d0d0'];
+			const px=new Array(size*size);
+			for(let y=0;y<size;y++){
+				for(let x=0;x<size;x++){
+					px[y*size+x]=colors[Math.abs(x*13+y*7+seedOffset*5)%colors.length];
+				}
+			}
+			return px;
+		},
+		SAMPLE_EXIT8(){
+			const size=16;
+			const wallBase='#c9c2a6', wallBoard='#8a8368', wallSeam='#b0a98d';
+			const wallPx=new Array(size*size);
+			for(let y=0;y<size;y++){
+				for(let x=0;x<size;x++){
+					wallPx[y*size+x] = (y>=size-3) ? wallBoard : ((x%8===0) ? wallSeam : wallBase);
+				}
+			}
+			const floorPx=new Array(size*size);
+			for(let y=0;y<size;y++){
+				for(let x=0;x<size;x++){
+					floorPx[y*size+x]=((Math.floor(x/4)+Math.floor(y/4))%2===0)?'#6b6b6b':'#585858';
+				}
+			}
+			const ceilPx=new Array(size*size);
+			for(let y=0;y<size;y++){
+				for(let x=0;x<size;x++){
+					ceilPx[y*size+x]=(x%8===0||y%8===0)?'#bfbfbf':'#dcdcdc';
+				}
+			}
+			const sprites=[
+				{size,pixels:wallPx,name:'WALL_TILE',stableId:'sprite.exit8.1'},                       // 0
+				{size,pixels:floorPx,name:'FLOOR_TILE',stableId:'sprite.exit8.2'},                      // 1
+				{size,pixels:ceilPx,name:'CEIL_TILE',stableId:'sprite.exit8.3'},                        // 2
+				{size,pixels:this.buildSign(size,'right'),name:'SIGN_NORMAL',stableId:'sprite.exit8.4'},// 3
+				{size,pixels:this.buildSign(size,'left'),name:'SIGN_ANOMALY',stableId:'sprite.exit8.5'},// 4
+				{size,pixels:this.buildStaticNoise(size,0),name:'STATIC_A',stableId:'sprite.exit8.6'},  // 5
+				{size,pixels:this.buildStaticNoise(size,1),name:'STATIC_B',stableId:'sprite.exit8.7'}   // 6
+			];
+			// MAP: a single 1-tile-wide corridor along row y=9 (walls at y=8 and y=10, x=1..18), inside
+			// a 20x20 map whose outer border is already solid from the fill loop below. SIGN_NORMAL
+			// (sprite 3) sits at (10,8) on the north wall as the one tile the CUI script repaints each
+			// round via SETTILE (by name) to plant -- or not plant -- this round's anomaly.
+			const mapSize=20;
+			const mapData=new Array(mapSize*mapSize).fill(-1);
+			for(let x=0;x<mapSize;x++){mapData[x]=0;mapData[(mapSize-1)*mapSize+x]=0;}
+			for(let y=0;y<mapSize;y++){mapData[y*mapSize]=0;mapData[y*mapSize+mapSize-1]=0;}
+			for(let x=1;x<mapSize-1;x++){mapData[8*mapSize+x]=0;mapData[10*mapSize+x]=0;}
+			mapData[8*mapSize+10]=3; // SIGN_NORMAL at (10,8) to start
+			// SOUND: three named cues (CHIME/BUZZ/FANFARE), same wave/note/track shapes VAULT ESCAPE
+			// uses, so the editor tabs show real data if the person opens GRAPHIC/SOUND to look around.
+			const waveChime={osc1:'triangle',use2:false,osc2:'square',combine:'add',filter:'low',cutoff:1800,q:6,a:5,d:120,s:0.4,r:180,name:'CHIME'};
+			const waveBuzz={osc1:'square',use2:false,osc2:'square',combine:'add',filter:'low',cutoff:500,q:3,a:1,d:90,s:0,r:60,name:'BUZZ'};
+			const waveFanfare={osc1:'square',use2:true,osc2:'triangle',combine:'add',filter:'low',cutoff:4000,q:4,a:2,d:140,s:0.5,r:220,name:'FANFARE'};
+			const noteChime={steps:[{note:0,octave:4},{note:4,octave:4},{note:7,octave:4},{note:0,octave:5}],stepsPerBar:4,name:'CHIME'};
+			const noteBuzz={steps:[{note:9,octave:2}],stepsPerBar:4,name:'BUZZ'};
+			const noteFanfare={steps:[
+				{note:0,octave:4},{note:4,octave:4},{note:7,octave:4},{note:0,octave:5},
+				{note:4,octave:5},{note:7,octave:5},{note:0,octave:6},null
+			],stepsPerBar:8,name:'FANFARE'};
+			const trackChime={wave:0,note:0,vol:1,pan:0,name:'CHIME'};
+			const trackBuzz={wave:1,note:1,vol:0.9,pan:0,name:'BUZZ'};
+			const trackFanfare={wave:2,note:2,vol:1,pan:0,name:'FANFARE'};
+			const items=[{name:'MEMO',stableId:'item.exit8.1',desc:'"If something feels wrong, turn back." Found on the floor.'}];
+			const mml=[
+				'MASTER BPM=120 VOL=80',
+				'WAVE 0 OSC1=TRIANGLE USE2=0 OSC2=SQUARE COMBINE=ADD FILTER=LOW CUTOFF=1800 Q=6 A=5 D=120 S=40 R=180 NAME=CHIME',
+				'WAVE 1 OSC1=SQUARE USE2=0 OSC2=SQUARE COMBINE=ADD FILTER=LOW CUTOFF=500 Q=3 A=1 D=90 S=0 R=60 NAME=BUZZ',
+				'WAVE 2 OSC1=SQUARE USE2=1 OSC2=TRIANGLE COMBINE=ADD FILTER=LOW CUTOFF=4000 Q=4 A=2 D=140 S=50 R=220 NAME=FANFARE',
+				'NOTE 0 STEPS=4 BAR=4 DATA=C4,E4,G4,C5 NAME=CHIME',
+				'NOTE 1 STEPS=1 BAR=4 DATA=A2 NAME=BUZZ',
+				'NOTE 2 STEPS=8 BAR=8 DATA=C4,E4,G4,C5,E5,G5,C6, NAME=FANFARE',
+				'TRACK 0 WAVE=0 NOTE=0 VOL=100 PAN=0 NAME=CHIME',
+				'TRACK 1 WAVE=1 NOTE=1 VOL=90 PAN=0 NAME=BUZZ',
+				'TRACK 2 WAVE=2 NOTE=2 VOL=100 PAN=0 NAME=FANFARE'
+			].join('\\n');
+			const cui=[
+				'REM ==== THE LOOP: a BLACKMAGIC BASIC mini game ====',
+				'REM Walk the corridor. If something looks wrong, turn back the way',
+				'REM you came. If nothing is wrong, keep walking forward. Guess right',
+				'REM eight times in a row to escape; guess wrong even once and you',
+				'REM start over from Exit 0.',
+				'',
+				'SETFLOOR FLOOR_TILE',
+				'SETCEIL CEIL_TILE',
+				'LET MML$ = "'+mml+'"',
+				'SNDLOAD "loop", MML$',
+				'',
+				'REM --- reusable per-outcome logic, called by name from the main loop below ---',
+				'EVENT ON_CORRECT',
+				'LET EXIT_NUM = EXIT_NUM + 1',
+				'SNDPLAYNOTE "loop", "CHIME", "CHIME"',
+				'DIALOG "Exit " + STR$(EXIT_NUM) + "...\\nNothing seemed wrong. Probably fine."',
+				'ENDEVENT',
+				'',
+				'EVENT ON_WRONG',
+				'SNDPLAYNOTE "loop", "BUZZ", "BUZZ"',
+				'SCENE',
+				'PRINT "Something is wrong. The world stutters."',
+				'PLAYMOVIE GLITCH',
+				'ENDSCENE',
+				'LET EXIT_NUM = 0',
+				'DIALOG "You blink, and you are standing at Exit 0 again."',
+				'ENDEVENT',
+				'',
+				'EVENT ON_WIN',
+				'SETFLAG CLEARED_ONCE',
+				'SCENE',
+				'SNDPLAYNOTE "loop", "FANFARE", "FANFARE"',
+				'DIALOG "Exit 8. The door ahead looks... real, this time."',
+				'ENDSCENE',
+				'ENDEVENT',
+				'',
+				'IF FLAG("CLEARED_ONCE") THEN',
+				'DIALOG "This corridor again. Let\\\'s see how fast you can clear it this time."',
+				'ENDIF',
+				'',
+				'LET EXIT_NUM = 0',
+				'WHILE EXIT_NUM < 8',
+				'',
+				'LET HASANOMALY = 0',
+				'SETTILE 10, 8, SIGN_NORMAL',
+				'IF RND() < 0.5 THEN',
+				'LET HASANOMALY = 1',
+				'SETTILE 10, 8, SIGN_ANOMALY',
+				'ENDIF',
+				'',
+				'SCENE',
+				'TELEPORT 5, 9.5, 0',
+				'PRINT "Exit " + STR$(EXIT_NUM) + ". Walking in."',
+				'ENDSCENE',
+				'',
+				'IF EXIT_NUM = 3 AND HASITEM("MEMO") = 0 THEN',
+				'GIVE MEMO',
+				'DIALOG "There is a memo on the floor.\\n\\"If something feels wrong, turn back.\\""',
+				'ENDIF',
+				'',
+				'REM WAITZONE below: forward zone at x=17, back zone at x=2. TELEPORT lands the',
+				'REM player at x=5, clear of both zones (a 3-tile margin from the back zone) --',
+				'REM starting exactly on top of a zone would resolve WAITZONE instantly with no',
+				'REM walking required, since it only checks distance, not direction of travel.',
+				'LET CHOICE = 0',
+				'WAITZONE CHOICE, 17,9.5,1.5, 2,9.5,1.5',
+				'',
+				'LET CORRECT = 0',
+				'IF HASANOMALY = 1 AND CHOICE = 2 THEN',
+				'LET CORRECT = 1',
+				'ENDIF',
+				'IF HASANOMALY = 0 AND CHOICE = 1 THEN',
+				'LET CORRECT = 1',
+				'ENDIF',
+				'',
+				'IF CORRECT = 1 THEN',
+				'CALL ON_CORRECT',
+				'ELSE',
+				'CALL ON_WRONG',
+				'ENDIF',
+				'',
+				'WEND',
+				'',
+				'CALL ON_WIN'
+			].join('\n');
+			return {
+				version:1,
+				cui,
+				graphic:{
+					palette:['','#c9c2a6','#6b6b6b','#dcdcdc','#1a7a3c','#ffffff','#000000'],
+					sprites,
+					map:{size:mapSize,data:mapData,floorIdx:1,ceilIdx:2},
+					movie:[{frames:[5,6,5,6],frameTime:100,name:'GLITCH',stableId:'movie.exit8.1'}]
+				},
+				sound:{
+					waves:[waveChime,waveBuzz,waveFanfare],
+					notes:[noteChime,noteBuzz,noteFanfare],
+					tracks:[trackChime,trackBuzz,trackFanfare],
+					master:{bpm:120,vol:0.8}
+				},
+				game:{items,entities:[]}
+			};
+		},
+		LOAD_SAMPLE_EXIT8(){
+			const sample=this.SAMPLE_EXIT8();
+			this.APPLY(sample);
+			const t=document.getElementById('projectText');
+			if(t) t.value=JSON.stringify(sample,null,1);
+			const out=document.getElementById('projectOut');
+			BLACK.SYS.STATUS(out,'THE LOOP sample loaded\nOpen CUI and press RUN, then open GUI: walk forward if the exit sign\nlooks normal, walk back to the start if anything looks wrong.\nEight correct guesses in a row wins; one wrong guess resets to Exit 0.','ok');
+		}
+	},
+	// Thin GUI wrapper around the Phase 3 AI-facing API implemented in script-magic
+	// (MAGIC.getProjectCatalog/applyDiff/validateProject) -- see instruction doc sections 9/11.
+	// Kept as bare `MAGIC.xxx()` calls (not captured at parse time) since script-magic's <script>
+	// tag runs after this one; by the time any of these buttons can actually be clicked, MAGIC
+	// already exists globally, same as every other cross-module call in this file.
+	AI:{
+		SHOW_CATALOG(){
+			const out=document.getElementById('aiOut');
+			try{ BLACK.SYS.STATUS(out,JSON.stringify(MAGIC.getProjectCatalog(),null,1),'ok'); }
+			catch(e){ BLACK.SYS.STATUS(out,e.stack||String(e),'err'); }
+		},
+		VALIDATE(){
+			const out=document.getElementById('aiOut');
+			try{
+				const issues=MAGIC.validateProject();
+				if(!issues.length){ BLACK.SYS.STATUS(out,'VALIDATE: no issues found','ok'); return; }
+				const text=issues.map(i=>'['+i.level.toUpperCase()+'] '+i.message).join('\n');
+				BLACK.SYS.STATUS(out,text,issues.some(i=>i.level==='error')?'err':'ok');
+			}catch(e){ BLACK.SYS.STATUS(out,e.stack||String(e),'err'); }
+		},
+		APPLY_DIFF(){
+			const out=document.getElementById('aiOut');
+			const t=document.getElementById('diffText');
+			try{
+				const ops=JSON.parse(t?t.value:'[]');
+				const results=MAGIC.applyDiff(ops);
+				const text=results.map(r=>(r.ok?'[OK] ':'[FAIL] ')+r.op.op+' '+r.op.type+' '+r.op.name+(r.ok?'':(': '+r.error))).join('\n');
+				BLACK.SYS.STATUS(out,text||'(no ops)',results.every(r=>r.ok)?'ok':'err');
+			}catch(e){ BLACK.SYS.STATUS(out,'Diff JSON parse/apply error:\n'+(e.message||String(e)),'err'); }
 		}
 	}
 };
@@ -824,6 +1336,26 @@ BLACK.GUI={
 	DOOR_SPRITE:3,
 	INTERACT_RANGE:1.5,
 	nearDoor:null,
+	// In-game cutscene state for the PLAYMOVIE CUI bridge command. Distinct from
+	// BLACK.GRAPHIC.MOVIE.PLAY_INDEX(), which only drives the small preview swatch on the
+	// GRAPHIC/MOVIE editor tab (invisible while the player is on the GUI tab). PLAY_MOVIE()
+	// below is what actually shows the movie's frames full-screen on the game canvas: RENDER()
+	// checks movie.playing first and, if set, draws the current frame's sprite scaled to fill
+	// the screen instead of the normal raycast view. PLAY_MOVIE() returns a Promise that resolves
+	// once the movie has advanced through all its frames (or is cut short by STOP_MOVIE()), so
+	// PLAYMOVIE compiles to an awaited call: it blocks the CUI script until playback finishes,
+	// the same way DIALOG_STMT already blocks on DIALOG_ASYNC. That gives scripts a real ordering
+	// guarantee -- text/sound issued after PLAYMOVIE always happens after the movie is done --
+	// without needing SCENE for that specific case. What PLAYMOVIE alone does NOT do is stop the
+	// player from walking around mid-movie; that's SCENE's job (see sceneActive below).
+	movie:{playing:false,frames:null,idx:0,timer:null,resolve:null},
+	// SCENE_STMT state: while sceneActive is true, UPDATE() skips WASD movement entirely and
+	// INTERACT() skips world interaction (opening doors), so a SCENE block reads as "just watch/
+	// listen" -- movie playback, sound, and PRINT/DIALOG text are still driven by the script as
+	// normal, but the player can't wander off or open the vault door mid-cutscene. Dismissing a
+	// DIALOG_ASYNC message box (E/Enter/tap while messageMode is set) still works during a SCENE,
+	// since that's the scripted way the scene itself advances, not free-roam interaction.
+	sceneActive:false,
 	// In-GUI dialog state: dialogLines holds whatever is currently shown in the centered overlay
 	// (PRINT scrollback, an INPUT prompt, or a DIALOG message -- see LOG/INPUT_ASYNC/DIALOG_ASYNC).
 	// inputMode is "waiting for typed text" (INPUT_STMT); messageMode is "waiting for an
@@ -833,12 +1365,6 @@ BLACK.GUI={
 	dialogLines:[],
 	inputMode:false,
 	messageMode:false,
-	// Gate that keeps the guiDialog overlay hidden the instant RUN starts (PRINT/INPUT from the
-	// CUI script would otherwise pop the overlay open immediately, before the player has done
-	// anything). Stays closed until the player's first E/Enter/tap, reset to false at the start
-	// of every RUN (see BLACK.CUI.RUN). Once opened it stays open for the rest of the session,
-	// so door DIALOG_ASYNC messages and their E-to-dismiss behavior work exactly as before.
-	dialogGateOpen:false,
 	currentPrompt:'',
 	// Live typed text for INPUT; shown in the dialog overlay and submitted on Enter.
 	// Kept in sync with guiHiddenInput so both desktop keydown and mobile on-screen keyboard work.
@@ -852,11 +1378,23 @@ BLACK.GUI={
 	CLEAR(){const c=document.getElementById('screen'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);this.CLEARLOG();},
 	// PRINT bridge target (called from BLACK.CUI.PRINT) so game text shows up inside the GUI
 	// dialog overlay instead of only on the CUI tab's #out panel.
+	// MAX_DIALOG_LINES is the single source of truth for how many lines the overlay box's SPAN
+	// (scrollback + live prompt/input-echo line, while inputMode is active) is tuned to show at
+	// once -- it does not count the separate #guiDialogKeyHint row, which sits below the span in
+	// its own line. #guiDialog's CSS (line-height:15px, max-height:150px = 10 rows) is sized for
+	// MAX_DIALOG_LINES(8) + 1 hint row + 1 spare row of slack for a long PRINT line wrapping to
+	// two visual rows; if this number changes, that CSS max-height must be updated to match, or
+	// content will silently scroll out of view above the fold again (the box always auto-scrolls
+	// to the bottom -- see box.scrollTop below -- so overflow hides the *oldest* visible line
+	// with no scrollbar-drag hint that anything is missing). LOG() caps the *scrollback* to this,
+	// but that alone isn't enough: RENDER_DIALOG() also appends the live prompt/input-echo line,
+	// so it re-trims the combined (scrollback + prompt) list to MAX_DIALOG_LINES itself, ensuring
+	// what's actually put on screen never exceeds what the box is sized for either way.
+	MAX_DIALOG_LINES:8,
 	LOG(text){
 		String(text).split('\n').forEach(line=>this.dialogLines.push(line));
-		if(this.dialogLines.length>6) this.dialogLines=this.dialogLines.slice(-6);
+		if(this.dialogLines.length>this.MAX_DIALOG_LINES) this.dialogLines=this.dialogLines.slice(-this.MAX_DIALOG_LINES);
 		this.RENDER_DIALOG();
-		this.updateInteractUI();
 	},
 	CLEARLOG(){
 		this.dialogLines=[];
@@ -871,13 +1409,15 @@ BLACK.GUI={
 		const box=document.getElementById('guiDialog');
 		const hint=document.getElementById('guiDialogKeyHint');
 		if(!span||!box) return;
-		let text=this.dialogLines.join('\n');
+		let lines=this.dialogLines;
 		if(this.inputMode){
-			text += (text?'\n':'') + this.currentPrompt+' '+this.inputBuffer+(this.cursorOn?'_':' ');
+			lines=lines.concat([this.currentPrompt+' '+this.inputBuffer+(this.cursorOn?'_':' ')]);
 		}
+		if(lines.length>this.MAX_DIALOG_LINES) lines=lines.slice(-this.MAX_DIALOG_LINES);
+		const text=lines.join('\n');
 		span.textContent=text;
 		if(hint) hint.textContent = this.inputMode ? '[ENTER] to submit' : this.messageMode ? '[E] to continue' : '';
-		box.style.display = (this.dialogGateOpen && (text || this.messageMode)) ? 'block' : 'none';
+		box.style.display = (text || this.messageMode) ? 'block' : 'none';
 		box.scrollTop=box.scrollHeight;
 	},
 	// Toggles cursorOn every 500ms; only re-renders while an INPUT is actually pending so the
@@ -900,7 +1440,7 @@ BLACK.GUI={
 	// Hidden input's oninput: sync buffer from the field (mobile/on-screen keyboard path) and
 	// re-render so typed text echoes live inside the dialog.
 	_ECHO_INPUT(){
-		if(!this.inputMode||!this.dialogGateOpen) return;
+		if(!this.inputMode) return;
 		const field=document.getElementById('guiHiddenInput');
 		if(field) this.inputBuffer=field.value;
 		this.RENDER_DIALOG();
@@ -908,7 +1448,7 @@ BLACK.GUI={
 	// Hidden input keydown: Enter submits; other keys are handled via oninput for mobile, and
 	// also via the document keydown path for desktop when the field is not focused.
 	_HIDDEN_KEYDOWN(e){
-		if(!this.inputMode||!this.dialogGateOpen) return;
+		if(!this.inputMode) return;
 		if(e.key==='Enter'){
 			e.preventDefault();
 			this._SUBMIT_INPUT();
@@ -957,12 +1497,9 @@ BLACK.GUI={
 			const field=document.getElementById('guiHiddenInput');
 			const interactBtn=document.getElementById('guiInteractBtn');
 			if(field) field.value='';
-			if(this.dialogGateOpen){
-				if(interactBtn) interactBtn.style.display='none';
-				if(field) field.focus();
-			}
+			if(interactBtn) interactBtn.style.display='none';
+			if(field) field.focus();
 			this.RENDER_DIALOG();
-			this.updateInteractUI();
 			this._inputResolve=resolve;
 		});
 	},
@@ -994,9 +1531,8 @@ BLACK.GUI={
 			this.keys={};
 			this.dialogLines=String(text).split('\n');
 			const interactBtn=document.getElementById('guiInteractBtn');
-			if(this.dialogGateOpen && interactBtn){interactBtn.textContent='[E] CONTINUE';interactBtn.style.display='block';}
+			if(interactBtn){interactBtn.textContent='[E] CONTINUE';interactBtn.style.display='block';}
 			this.RENDER_DIALOG();
-			this.updateInteractUI();
 			this._messageResolve=resolve;
 		});
 	},
@@ -1018,6 +1554,80 @@ BLACK.GUI={
 		this.player.y=y;
 		if(ang!=null) this.player.ang=ang;
 	},
+	// Bridge target for the PLAYMOVIE CUI command (see MAGIC.registerCommand('PLAYMOVIE', ...)):
+	// plays an already-authored GRAPHIC/MOVIE by index full-screen over the game canvas, and
+	// resolves the returned Promise once the movie has played through all its frames (which is
+	// why PLAYMOVIE compiles to an awaited call). Starting a new PLAY_MOVIE, or calling
+	// STOP_MOVIE(), while one is already running cancels the old timer AND resolves its Promise
+	// first, so a script is never left permanently suspended waiting on a movie that got cut off.
+	PLAY_MOVIE(listIdx){
+		this.STOP_MOVIE();
+		return new Promise((resolve)=>{
+			const m=BLACK.GRAPHIC.MOVIE.LIST[listIdx];
+			if(!m||!m.frames||!m.frames.length){resolve();return;}
+			this.movie.playing=true;
+			this.movie.frames=m.frames;
+			this.movie.idx=0;
+			this.movie.resolve=resolve;
+			const frameTime=m.frameTime||200;
+			const step=()=>{
+				if(!this.movie.playing) return;
+				this.movie.idx++;
+				if(this.movie.idx>=this.movie.frames.length){this.STOP_MOVIE();return;}
+				this.movie.timer=setTimeout(step,frameTime);
+			};
+			this.movie.timer=setTimeout(step,frameTime);
+		});
+	},
+	STOP_MOVIE(){
+		this.movie.playing=false;
+		if(this.movie.timer){clearTimeout(this.movie.timer);this.movie.timer=null;}
+		if(this.movie.resolve){const r=this.movie.resolve;this.movie.resolve=null;r();}
+	},
+	// Bridge target for WAITZONE: resolves with 1 if the player reaches zone A (x1,y1,r1) first,
+	// or 2 if zone B (x2,y2,r2) first. Checked every frame from UPDATE() via _zoneWait (the same
+	// lightweight poll-in-the-existing-loop pattern as nearDoor/updateInteractUI), so it keeps
+	// working while the player free-walks with no other CUI statement running -- there is no
+	// separate timer here, unlike PLAY_MOVIE's setTimeout chain, because there's nothing to wait
+	// for except the player's own position, which UPDATE() already recomputes every frame.
+	// Only one WAITZONE can be pending at a time by design (a script always wants one clear
+	// decision point): starting a new one, or calling _cancelZoneWait() directly, resolves the
+	// previous one with 0 first, so a script already awaiting a stale zone from an earlier round
+	// can never be left hanging.
+	_zoneWait:null,
+	WAIT_ZONE(x1,y1,r1,x2,y2,r2){
+		this._cancelZoneWait();
+		return new Promise((resolve)=>{
+			this._zoneWait={x1,y1,r1,x2,y2,r2,resolve};
+		});
+	},
+	_cancelZoneWait(){
+		if(this._zoneWait){const r=this._zoneWait.resolve;this._zoneWait=null;r(0);}
+	},
+	_checkZoneWait(){
+		if(!this._zoneWait) return;
+		const p=this.player, z=this._zoneWait;
+		const d1=Math.hypot(p.x-z.x1,p.y-z.y1), d2=Math.hypot(p.x-z.x2,p.y-z.y2);
+		if(d1<=z.r1){const r=z.resolve;this._zoneWait=null;r(1);}
+		else if(d2<=z.r2){const r=z.resolve;this._zoneWait=null;r(2);}
+	},
+	// SCENE_STMT bridge (see MAGIC.getSceneStmt): called at the start/end of every SCENE...ENDSCENE
+	// block. Blocks free-roam input for the duration -- see sceneActive's comment above -- and
+	// clears any stale nearDoor/interact-button state immediately rather than waiting for the next
+	// UPDATE() tick (which won't run at all while sceneActive is true). SCENE_EXIT() also stops any
+	// movie still playing, so leaving a scene early (BREAK/RETURN/an error inside it) can't leave a
+	// cutscene running forever in the background. It does NOT cancel a pending WAITZONE -- a scene
+	// is expected to run *before* a WAITZONE decision point, never concurrently with one, since the
+	// player can't move (and so could never reach either zone) while sceneActive is true anyway.
+	SCENE_ENTER(){
+		this.sceneActive=true;
+		this.nearDoor=null;
+		this.updateInteractUI();
+	},
+	SCENE_EXIT(){
+		this.sceneActive=false;
+		this.STOP_MOVIE();
+	},
 	// START (re)activates the GUI loop -- called both when the GUI tab is opened and every time
 	// RUN executes (BLACK.CUI.RUN -> BLACK.SYS.ON('GUI')). It always clears this.keys so a key that
 	// got "stuck" true (its keyup missed because focus moved to the RUN button, a tab switch, or an
@@ -1027,22 +1637,17 @@ BLACK.GUI={
 	START(){
 		this.active=true;
 		this.keys={};
+		this.STOP_MOVIE();
+		this._cancelZoneWait();
 		this.START_CURSOR_BLINK();
 		if(!this._bound){
 			document.addEventListener('keydown',e=>{
-				const confirm = e.key==='e'||e.key==='E'||e.key==='Enter';
-				// Dialog gate closed: RUN may already have queued PRINT/INPUT text (see
-				// dialogGateOpen), but nothing is shown and no key does anything except
-				// E/Enter/tap, which opens the gate via INTERACT() below.
-				if(!this.dialogGateOpen){
-					if(confirm) this.INTERACT();
-					return;
-				}
 				// INPUT mode: route keys into the live dialog buffer / Enter-to-submit path.
 				if(this.inputMode){
 					this._HANDLE_INPUT_KEY(e);
 					return;
 				}
+				const confirm = e.key==='e'||e.key==='E'||e.key==='Enter';
 				if(this.messageMode){
 					if(confirm) this.INTERACT();
 					return;
@@ -1059,12 +1664,13 @@ BLACK.GUI={
 			window.addEventListener('blur',()=>{this.keys={};});
 			this._bound=true;
 		}
-		this.updateInteractUI();
 		if(!this.raf) this.loop();
 	},
 	STOP(){
 		this.active=false;
 		this.keys={};
+		this.STOP_MOVIE();
+		this._cancelZoneWait();
 		if(this.raf){cancelAnimationFrame(this.raf);this.raf=null;}
 	},
 	loop(){
@@ -1074,7 +1680,8 @@ BLACK.GUI={
 		this.raf=requestAnimationFrame(()=>this.loop());
 	},
 	UPDATE(){
-		if(this.inputMode||this.messageMode) return;
+		this._checkZoneWait();
+		if(this.inputMode||this.messageMode||this.sceneActive) return;
 		const sp=0.06,rs=0.05,map=BLACK.GRAPHIC.MAP,p=this.player;
 		if(this.keys['ArrowLeft']||this.keys['a']||this.keys['A']) p.ang-=rs;
 		if(this.keys['ArrowRight']||this.keys['d']||this.keys['D']) p.ang+=rs;
@@ -1110,13 +1717,6 @@ BLACK.GUI={
 	updateInteractUI(){
 		const btn=document.getElementById('guiInteractBtn');
 		if(!btn) return;
-		if(!this.dialogGateOpen){
-			const hasPending = this.dialogLines.length>0 || this.inputMode || this.messageMode;
-			btn.style.display = hasPending ? 'block' : 'none';
-			if(hasPending) btn.textContent='[E] START';
-			return;
-		}
-		if(this.inputMode||this.messageMode) return; // those modes manage the button themselves
 		if(this.nearDoor){
 			btn.style.display='block';
 			btn.textContent = this.doorUnlocked ? '[E] OPEN DOOR' : '[E] EXAMINE DOOR';
@@ -1130,20 +1730,8 @@ BLACK.GUI={
 	// range, it shows the door's own centered DIALOG message: whether it opens depends on
 	// doorUnlocked, which the CUI tutorial script sets via SETDOORKEY once all four trials are solved.
 	INTERACT(){
-		if(!this.dialogGateOpen){
-			this.dialogGateOpen=true;
-			this.RENDER_DIALOG();
-			this.updateInteractUI();
-			// If a trial's INPUT prompt was already queued (very likely -- RUN reaches it
-			// synchronously before the player can press anything), reveal it and hand focus
-			// to the hidden field now so mobile's on-screen keyboard appears immediately.
-			if(this.inputMode){
-				const field=document.getElementById('guiHiddenInput');
-				if(field) field.focus();
-			}
-			return;
-		}
 		if(this.messageMode){this.DISMISS_DIALOG();return;}
+		if(this.sceneActive) return;
 		if(!this.active||!this.nearDoor) return;
 		const {x,y}=this.nearDoor;
 		if(this.doorUnlocked){
@@ -1168,10 +1756,33 @@ BLACK.GUI={
 		}
 		return this.buf;
 	},
+	// Draws the current PLAY_MOVIE() frame's sprite scaled (nearest-neighbor) to fill the whole
+	// canvas. Missing/empty (-1) frames fall back to solid black rather than leaving stale pixels.
+	RENDER_MOVIE_FRAME(buf,W,H){
+		const spr=BLACK.GRAPHIC.SPRITES[this.movie.frames[this.movie.idx]];
+		for(let row=0;row<H;row++){
+			const texY=spr?Math.min(spr.size-1,Math.floor(row/H*spr.size)):0;
+			let off=row*W*4;
+			for(let col=0;col<W;col++){
+				let rgb=[0,0,0];
+				if(spr){
+					const texX=Math.min(spr.size-1,Math.floor(col/W*spr.size));
+					rgb=this.hexToRGB(spr.pixels[texY*spr.size+texX])||[0,0,0];
+				}
+				buf[off]=rgb[0]; buf[off+1]=rgb[1]; buf[off+2]=rgb[2]; buf[off+3]=255;
+				off+=4;
+			}
+		}
+	},
 	RENDER(){
 		const c=document.getElementById('screen'),x=c.getContext('2d'),W=c.width,H=c.height;
-		const map=BLACK.GRAPHIC.MAP,sprites=BLACK.GRAPHIC.SPRITES,p=this.player;
 		const buf=this.ensureBuffer(W,H);
+		if(this.movie.playing){
+			this.RENDER_MOVIE_FRAME(buf,W,H);
+			x.putImageData(this.imgData,0,0);
+			return;
+		}
+		const map=BLACK.GRAPHIC.MAP,sprites=BLACK.GRAPHIC.SPRITES,p=this.player;
 		const ceilRGB=this.hexToRGB(BLACK.GRAPHIC.avgColor(map.ceilIdx))||[34,34,34];
 		const floorRGB=this.hexToRGB(BLACK.GRAPHIC.avgColor(map.floorIdx))||[51,51,51];
 		const halfH=H/2;
@@ -1236,6 +1847,38 @@ BLACK.GRAPHIC={
 	SPRITES:[],
 	curSprite:-1,
 	curColor:0,
+	// Semantic Name / Stable ID layer (see script-magic MAGIC.NAMES): every SPRITE carries an
+	// optional uppercase `name` (what scripts/AI reference, e.g. "GOBLIN") and a `stableId`
+	// ("sprite.N") that never changes even if the sprite is renamed or the array is reordered.
+	// Runtime code (MAP.DATA, MOVIE frames) still stores the plain integer array index -- these
+	// fields are metadata only, resolved to that index by the compiler before Runtime ever sees it.
+	_sidSeq:0,
+	nextStableId(prefix){this._sidSeq++;return prefix+'.'+this._sidSeq;},
+	// Backfills name/stableId on sprites loaded from an older Project JSON that predates this layer,
+	// so old projects keep working (name stays '' -- unnamed sprites are simply not name-referenceable).
+	migrateNames(){
+		this.SPRITES.forEach(s=>{
+			if(s.stableId==null) s.stableId=this.nextStableId('sprite');
+			if(s.name==null) s.name='';
+		});
+	},
+	// Rename: only the display Semantic Name changes. stableId (and therefore every existing
+	// reference: MAP cells, MOVIE frames, compiled scripts) is left untouched -- see instruction
+	// doc section 9.
+	RENAME(newName){
+		if(this.curSprite<0) return;
+		const spr=this.SPRITES[this.curSprite];
+		if(!spr) return;
+		const clean=String(newName||'').trim().toUpperCase().replace(/[^A-Z0-9_]/g,'_');
+		spr.name=clean;
+		this.syncNameUI();
+	},
+	syncNameUI(){
+		const inp=document.getElementById('gfxSpriteName'), sid=document.getElementById('gfxSpriteStableId');
+		const spr=this.SPRITES[this.curSprite];
+		if(inp) inp.value=spr?(spr.name||''):'';
+		if(sid) sid.textContent=spr?spr.stableId:'';
+	},
 	PAGE(name){
 		this.curPage=name;
 		for(const p of this.PAGES){const el=document.getElementById('GRAPHIC_'+p);if(el) el.style.display=(p===name)?'block':'none';}
@@ -1320,16 +1963,18 @@ BLACK.GRAPHIC={
 	REFRESH(){
 		const list=document.getElementById('gfxSpriteList');
 		if(!list) return;
+		this.migrateNames();
 		list.innerHTML='';
-		this.SPRITES.forEach((s,i)=>{const o=document.createElement('option');o.value=i;o.textContent=i+' ('+s.size+'x'+s.size+')';list.appendChild(o);});
+		this.SPRITES.forEach((s,i)=>{const o=document.createElement('option');o.value=i;o.textContent=i+(s.name?' '+s.name:'')+' ('+s.size+'x'+s.size+')';list.appendChild(o);});
 		if(this.curSprite>=0) list.value=this.curSprite;
 		this.renderPalette();
 		this.buildTable();
+		this.syncNameUI();
 	},
 	NEW(){
 		const sizeSel=document.getElementById('gfxSize');
 		const size=sizeSel? parseInt(sizeSel.value):16;
-		this.SPRITES.push({size,pixels:new Array(size*size).fill('')});
+		this.SPRITES.push({size,pixels:new Array(size*size).fill(''),name:'',stableId:this.nextStableId('sprite')});
 		this.curSprite=this.SPRITES.length-1;
 		this.REFRESH();
 		if(this.MAP) this.MAP.REFRESH();
@@ -1339,6 +1984,7 @@ BLACK.GRAPHIC={
 		const list=document.getElementById('gfxSpriteList');
 		this.curSprite=parseInt(list.value);
 		this.buildTable();
+		this.syncNameUI();
 	},
 	buildTable(){
 		const host=document.getElementById('gfxTable');
@@ -1516,7 +2162,7 @@ BLACK.GRAPHIC.MOVIE={
 	curFrame:0,
 	raf:null,
 	playing:false,
-	DEFAULT(){return {frames:new Array(8).fill(-1),frameTime:200};},
+	DEFAULT(){return {frames:new Array(8).fill(-1),frameTime:200,name:'',stableId:BLACK.GRAPHIC.nextStableId('movie')};},
 	INIT(){this.LIST=[this.DEFAULT()];this.cur=0;this.curFrame=0;},
 	NEW(){
 		this.LIST.push(this.DEFAULT());
@@ -1524,15 +2170,37 @@ BLACK.GRAPHIC.MOVIE={
 		this.curFrame=0;
 		this.REFRESH();
 	},
-	SELECT(){const sel=document.getElementById('movieList');this.cur=parseInt(sel.value);this.curFrame=0;this.FILL();},
+	// Backfills name/stableId on movies loaded from an older Project JSON (mirrors GRAPHIC.migrateNames).
+	migrateNames(){
+		this.LIST.forEach(m=>{
+			if(m.stableId==null) m.stableId=BLACK.GRAPHIC.nextStableId('movie');
+			if(m.name==null) m.name='';
+		});
+	},
+	RENAME(newName){
+		const m=this.LIST[this.cur];
+		if(!m) return;
+		const clean=String(newName||'').trim().toUpperCase().replace(/[^A-Z0-9_]/g,'_');
+		m.name=clean;
+		this.syncNameUI();
+	},
+	syncNameUI(){
+		const inp=document.getElementById('movieName'), sid=document.getElementById('movieStableId');
+		const m=this.LIST[this.cur];
+		if(inp) inp.value=m?(m.name||''):'';
+		if(sid) sid.textContent=m?m.stableId:'';
+	},
+	SELECT(){const sel=document.getElementById('movieList');this.cur=parseInt(sel.value);this.curFrame=0;this.FILL();this.syncNameUI();},
 	REFRESH(){
 		const sel=document.getElementById('movieList');
 		if(!sel) return;
+		this.migrateNames();
 		sel.innerHTML='';
-		this.LIST.forEach((m,i)=>{const o=document.createElement('option');o.value=i;o.textContent='MOVIE'+i;sel.appendChild(o);});
+		this.LIST.forEach((m,i)=>{const o=document.createElement('option');o.value=i;o.textContent='MOVIE'+i+(m.name?' '+m.name:'');sel.appendChild(o);});
 		sel.value=this.cur;
 		this.refreshSpriteOptions();
 		this.FILL();
+		this.syncNameUI();
 	},
 	refreshSpriteOptions(){
 		const sel=document.getElementById('movieSprite');
@@ -1627,8 +2295,10 @@ BLACK.GRAPHIC.MOVIE={
 		this.playing=false;
 		if(this.raf){clearTimeout(this.raf);this.raf=null;}
 	},
-	// Programmatic trigger for the PLAYMOVIE CUI bridge command: select an already-GUI-authored
-	// movie by index, then play it, mirroring the SOUND SNDLOAD/SNDPLAYTRACK reference pattern.
+	// Selects a movie by index and plays it in the small GRAPHIC/MOVIE editor preview swatch
+	// (#moviePreview) -- an editor-only convenience, not visible outside that tab. The PLAYMOVIE
+	// CUI bridge command targets BLACK.GUI.PLAY_MOVIE() instead, which renders full-screen on the
+	// actual game canvas; see that function for the in-game cutscene path.
 	PLAY_INDEX(idx){
 		if(idx<0||idx>=this.LIST.length) return;
 		this.cur=idx;
@@ -1840,17 +2510,28 @@ BLACK.SOUND={
 		sliderToFreq(v){const {cLo,cHi}=this.FILT;const t=Math.max(0,Math.min(1,v/1000));return cLo*Math.pow(cHi/cLo,t)},
 		qToSlider(q){const {qLo,qHi}=this.FILT;const t=Math.log(Math.max(qLo,Math.min(qHi,q))/qLo)/Math.log(qHi/qLo);return Math.round(t*1000)},
 		sliderToQ(v){const {qLo,qHi}=this.FILT;const t=Math.max(0,Math.min(1,v/1000));return qLo*Math.pow(qHi/qLo,t)},
-		DEFAULT(){return {osc1:'sine',use2:false,osc2:'square',combine:'add',filter:'none',cutoff:1000,q:10,a:10,d:100,s:0.7,r:200};},
+		DEFAULT(){return {osc1:'sine',use2:false,osc2:'square',combine:'add',filter:'none',cutoff:1000,q:10,a:10,d:100,s:0.7,r:200,name:''};},
 		INIT(){this.LIST=[this.DEFAULT()];this.cur=0;},
 		NEW(){this.LIST.push(this.DEFAULT());this.cur=this.LIST.length-1;this.REFRESH();},
-		SELECT(){const sel=document.getElementById('waveList');this.cur=parseInt(sel.value);this.FILL();},
+		// Backfills `name` on waves loaded from an older Project JSON (name defaults to '' = unnamed).
+		migrateNames(){this.LIST.forEach(w=>{if(w.name==null) w.name='';});},
+		RENAME(newName){
+			const w=this.LIST[this.cur];
+			if(!w) return;
+			w.name=String(newName||'').trim().toUpperCase().replace(/[^A-Z0-9_]/g,'_');
+			this.syncNameUI();
+		},
+		syncNameUI(){const inp=document.getElementById('waveName');const w=this.LIST[this.cur];if(inp) inp.value=w?(w.name||''):'';},
+		SELECT(){const sel=document.getElementById('waveList');this.cur=parseInt(sel.value);this.FILL();this.syncNameUI();},
 		REFRESH(){
 			const sel=document.getElementById('waveList');
 			if(!sel) return;
+			this.migrateNames();
 			sel.innerHTML='';
-			this.LIST.forEach((w,i)=>{const o=document.createElement('option');o.value=i;o.textContent='WAVE'+i;sel.appendChild(o);});
+			this.LIST.forEach((w,i)=>{const o=document.createElement('option');o.value=i;o.textContent='WAVE'+i+(w.name?' '+w.name:'');sel.appendChild(o);});
 			sel.value=this.cur;
 			this.FILL();
+			this.syncNameUI();
 			BLACK.SOUND.TRACK.REFRESH_WAVE_OPTIONS();
 		},
 		FILL(){
@@ -2228,23 +2909,34 @@ BLACK.SOUND={
 	TRACK:{
 		LIST:[],
 		cur:-1,
-		DEFAULT(){return {wave:0,note:0,vol:1,pan:0};},
+		DEFAULT(){return {wave:0,note:0,vol:1,pan:0,name:''};},
 		INIT(){this.LIST=[this.DEFAULT()];this.cur=0;},
 		NEW(){
 			this.LIST.push(this.DEFAULT());
 			this.cur=this.LIST.length-1;
 			this.REFRESH();
 		},
-		SELECT(){const sel=document.getElementById('trackList');this.cur=parseInt(sel.value);this.FILL();},
+		// Backfills `name` on tracks loaded from an older Project JSON (name defaults to '' = unnamed).
+		migrateNames(){this.LIST.forEach(t=>{if(t.name==null) t.name='';});},
+		RENAME(newName){
+			const t=this.LIST[this.cur];
+			if(!t) return;
+			t.name=String(newName||'').trim().toUpperCase().replace(/[^A-Z0-9_]/g,'_');
+			this.syncNameUI();
+		},
+		syncNameUI(){const inp=document.getElementById('trackName');const t=this.LIST[this.cur];if(inp) inp.value=t?(t.name||''):'';},
+		SELECT(){const sel=document.getElementById('trackList');this.cur=parseInt(sel.value);this.FILL();this.syncNameUI();},
 		REFRESH(){
 			const sel=document.getElementById('trackList');
 			if(!sel) return;
+			this.migrateNames();
 			sel.innerHTML='';
-			this.LIST.forEach((t,i)=>{const o=document.createElement('option');o.value=i;o.textContent='TRACK'+i;sel.appendChild(o);});
+			this.LIST.forEach((t,i)=>{const o=document.createElement('option');o.value=i;o.textContent='TRACK'+i+(t.name?' '+t.name:'');sel.appendChild(o);});
 			sel.value=this.cur;
 			this.REFRESH_WAVE_OPTIONS();
 			this.REFRESH_NOTE_OPTIONS();
 			this.FILL();
+			this.syncNameUI();
 		},
 		REFRESH_WAVE_OPTIONS(){
 			const sel=document.getElementById('trackWave');
@@ -2350,17 +3042,28 @@ BLACK.SOUND={
 			const W=BLACK.SOUND.WAVE.LIST, N=BLACK.SOUND.NOTE.LIST, T=BLACK.SOUND.TRACK.LIST, M=BLACK.SOUND.MASTER;
 			const lines=[];
 			lines.push('MASTER BPM='+M.bpm+' VOL='+Math.round(M.vol*100));
-			W.forEach((w,i)=>{lines.push('WAVE '+i+' OSC1='+w.osc1.toUpperCase()+' USE2='+(w.use2?1:0)+' OSC2='+w.osc2.toUpperCase()+' COMBINE='+w.combine.toUpperCase()+' FILTER='+w.filter.toUpperCase()+' CUTOFF='+w.cutoff+' Q='+w.q+' A='+w.a+' D='+w.d+' S='+Math.round(w.s*100)+' R='+w.r);});
+			// NAME=... is an optional trailing key: Semantic Name layer (instruction doc section 9).
+			// Older MML text without NAME= still parses fine (bank.waves[i].name stays undefined -> unnamed).
+			W.forEach((w,i)=>{lines.push('WAVE '+i+' OSC1='+w.osc1.toUpperCase()+' USE2='+(w.use2?1:0)+' OSC2='+w.osc2.toUpperCase()+' COMBINE='+w.combine.toUpperCase()+' FILTER='+w.filter.toUpperCase()+' CUTOFF='+w.cutoff+' Q='+w.q+' A='+w.a+' D='+w.d+' S='+Math.round(w.s*100)+' R='+w.r+(w.name?' NAME='+w.name:''));});
 			N.forEach((n,i)=>{
 				const spb=n.stepsPerBar||16;
 				const data=n.steps.map(p=>p?this.toKey(p.note,p.octave):'').join(',');
-				lines.push('NOTE '+i+' STEPS='+n.steps.length+' BAR='+spb+' DATA='+data);
+				lines.push('NOTE '+i+' STEPS='+n.steps.length+' BAR='+spb+' DATA='+data+(n.name?' NAME='+n.name:''));
 			});
-			T.forEach((t,i)=>{lines.push('TRACK '+i+' WAVE='+(t.wave||0)+' NOTE='+(t.note||0)+' VOL='+Math.round((t.vol!=null?t.vol:1)*100)+' PAN='+Math.round((t.pan||0)*100));});
+			T.forEach((t,i)=>{lines.push('TRACK '+i+' WAVE='+(t.wave||0)+' NOTE='+(t.note||0)+' VOL='+Math.round((t.vol!=null?t.vol:1)*100)+' PAN='+Math.round((t.pan||0)*100)+(t.name?' NAME='+t.name:''));});
 			return lines.join('\n');
 		},
 		PARSE(str){
-			const bank={waves:[],notes:[],tracks:[],master:{bpm:120,vol:0.8}};
+			const bank={waves:[],notes:[],tracks:[],master:{bpm:120,vol:0.8},waveNames:{},noteNames:{},trackNames:{}};
+			// registerName: builds the per-bank name->index dictionary as WAVE/NOTE/TRACK lines are
+			// parsed. Duplicate names within the same bank/namespace are rejected at load time
+			// (instruction doc section 9 -- same-namespace names must stay unique).
+			const registerName=(map,rawName,idx,kind)=>{
+				if(!rawName) return;
+				const key=rawName.toUpperCase();
+				if(Object.prototype.hasOwnProperty.call(map,key)) throw new Error('Duplicate '+kind+' name in SOUND bank: '+rawName);
+				map[key]=idx;
+			};
 			String(str).split(/[\r\n:]+/).forEach(raw=>{
 				const line=raw.trim();
 				if(!line) return;
@@ -2381,15 +3084,19 @@ BLACK.SOUND={
 						osc1:(kv.OSC1||'SINE').toLowerCase(),use2:kv.USE2==='1',osc2:(kv.OSC2||'SQUARE').toLowerCase(),
 						combine:(kv.COMBINE||'ADD').toLowerCase(),filter:(kv.FILTER||'NONE').toLowerCase(),
 						cutoff:parseFloat(kv.CUTOFF)||1000,q:parseFloat(kv.Q)||10,
-						a:parseFloat(kv.A)||10,d:parseFloat(kv.D)||100,s:(kv.S!==undefined?parseFloat(kv.S):70)/100,r:parseFloat(kv.R)||200
+						a:parseFloat(kv.A)||10,d:parseFloat(kv.D)||100,s:(kv.S!==undefined?parseFloat(kv.S):70)/100,r:parseFloat(kv.R)||200,
+						name:kv.NAME||''
 					};
+					registerName(bank.waveNames,kv.NAME,idx,'WAVE');
 				} else if(kind==='NOTE'){
 					const spb=parseInt(kv.BAR)||16;
 					const raw=(kv.DATA!==undefined?kv.DATA:'');
 					const steps=raw.length?raw.split(',').map(tok=>tok?this.toPitch(tok):null):new Array(spb).fill(null);
-					bank.notes[idx]={steps,stepsPerBar:spb};
+					bank.notes[idx]={steps,stepsPerBar:spb,name:kv.NAME||''};
+					registerName(bank.noteNames,kv.NAME,idx,'NOTE');
 				} else if(kind==='TRACK'){
-					bank.tracks[idx]={wave:parseInt(kv.WAVE)||0,note:parseInt(kv.NOTE)||0,vol:(kv.VOL!==undefined?parseInt(kv.VOL):100)/100,pan:(kv.PAN!==undefined?parseInt(kv.PAN):0)/100};
+					bank.tracks[idx]={wave:parseInt(kv.WAVE)||0,note:parseInt(kv.NOTE)||0,vol:(kv.VOL!==undefined?parseInt(kv.VOL):100)/100,pan:(kv.PAN!==undefined?parseInt(kv.PAN):0)/100,name:kv.NAME||''};
+					registerName(bank.trackNames,kv.NAME,idx,'TRACK');
 				}
 			});
 			return bank;
@@ -2418,13 +3125,31 @@ BLACK.SOUND={
 	},
 	BANKS:{},
 	SNDLOAD(name,mml){this.BANKS[name]=this.MML.PARSE(mml);},
+	// Semantic Name resolution for WAVE/NOTE/TRACK: unlike SPRITE/TILE/MOVIE (static Project data
+	// already loaded before a script compiles), SOUND banks are only populated once SNDLOAD actually
+	// executes at Runtime -- the compiler cannot know a bank's contents ahead of time. So instead of
+	// compile-time index substitution, name resolution for these three happens here, at the first
+	// safe point: idx is looked up against the bank's own name table if it's a string (i.e. the
+	// script called e.g. SNDPLAYWAVE "vault","DOOR_OPEN" with a quoted name), and used directly if
+	// it's already a number -- so old scripts that pass a literal/variable index keep working
+	// unchanged (instruction doc section 9).
+	RESOLVE_NAME(map,key,kind,bankName){
+		if(typeof key!=='string') return key;
+		const upper=key.toUpperCase();
+		if(map&&Object.prototype.hasOwnProperty.call(map,upper)) return map[upper];
+		const avail=map?Object.keys(map):[];
+		throw new Error('Unknown '+kind+' "'+key+'" in SOUND bank "'+bankName+'".'+(avail.length?' Available '+kind+': '+avail.join(', '):' No '+kind+' names are registered in this bank (add NAME=... in the MML).'));
+	},
 	SNDPLAYWAVE(name,idx){
 		const bank=this.BANKS[name];if(!bank) return;
+		idx=this.RESOLVE_NAME(bank.waveNames,idx,'WAVE',name);
 		const w=bank.waves[idx];if(!w) return;
 		this.ENGINE.PLAY(w,440,0.4);
 	},
 	SNDPLAYNOTE(name,waveIdx,noteIdx){
 		const bank=this.BANKS[name];if(!bank) return;
+		waveIdx=this.RESOLVE_NAME(bank.waveNames,waveIdx,'WAVE',name);
+		noteIdx=this.RESOLVE_NAME(bank.noteNames,noteIdx,'NOTE',name);
 		const pat=bank.notes[noteIdx];if(!pat) return;
 		const w=bank.waves[waveIdx]||bank.waves[0];if(!w) return;
 		const bpm=bank.master.bpm||120;
@@ -2435,6 +3160,7 @@ BLACK.SOUND={
 	},
 	SNDPLAYTRACK(name,idx){
 		const bank=this.BANKS[name];if(!bank) return;
+		idx=this.RESOLVE_NAME(bank.trackNames,idx,'TRACK',name);
 		const tr=bank.tracks[idx];if(!tr) return;
 		const pat=bank.notes[tr.note];if(!pat) return;
 		this.SNDSTOPTRACK(name,idx);
@@ -2454,6 +3180,7 @@ BLACK.SOUND={
 	},
 	SNDSTOPTRACK(name,idx){
 		const bank=this.BANKS[name];if(!bank) return;
+		idx=this.RESOLVE_NAME(bank.trackNames,idx,'TRACK',name);
 		const tr=bank.tracks[idx];if(!tr) return;
 		tr._playing=false;
 		if(tr._timer){clearTimeout(tr._timer);tr._timer=null;}
@@ -2468,7 +3195,120 @@ BLACK.SOUND={
 	}
 };
 </script>
+<script id="script-game">
+// GAME: Semantic Name / Stable ID Architecture Phase 2 -- ITEM, CHARACTER, ENEMY, EVENT, FLAG.
+// Scope note (read before extending this module): this file's GUI is a single-map, first-person
+// raycast dungeon crawler (see script-gui) with no on-map moving-sprite/NPC renderer and no combat
+// loop. So CHARACTER/ENEMY here are intentionally a pure DATA layer -- named, Semantic-Name-
+// resolvable records with the attributes the instruction doc describes (sprite/hp/attack/speed/ai/
+// attack_sound) -- NOT a spawn/AI/combat runtime, since building that would be a large new engine
+// feature this instruction doc does not actually ask for (and prohibition #5 warns against
+// complicating Runtime just to give AI something to generate). ITEM gets a minimal but functional
+// GIVE/HASITEM inventory since the doc's own worked example (section 16, GIVE SILVER_KEY) needs one
+// to be usable. MAP is not reintroduced as a separate namespace here: this engine has exactly one
+// map, and per-cell naming was already delivered in Phase 1 via the TILE namespace (SETTILE
+// STONE_WALL) -- multi-map/AREA support would be a large new feature (see the summary note left for
+// the user), not a naming-layer addition, so it's deliberately left out of Phase 2.
+BLACK.GAME={
+	PAGES:['ITEM','ENTITY'],
+	curPage:'ITEM',
+	ITEMS:[],
+	curItem:-1,
+	ENTITIES:[],
+	curEntity:-1,
+	inventory:[],
+	FLAGS:{},
+	_sidSeq:0,
+	nextStableId(prefix){this._sidSeq++;return prefix+'.'+this._sidSeq;},
+	PAGE(name){
+		this.curPage=name;
+		for(const p of this.PAGES){const el=document.getElementById('GAME_'+p);if(el) el.style.display=(p===name)?'block':'none';}
+		BLACK.SYS.HIGHLIGHT('navGAME',name);
+		if(name==='ITEM') this.REFRESH_ITEM();
+		if(name==='ENTITY') this.REFRESH_ENTITY();
+	},
+	INIT(){this.ITEMS=[];this.ENTITIES=[];this.inventory=[];this.FLAGS={};this.curItem=-1;this.curEntity=-1;},
+	// ---- ITEM -------------------------------------------------------------------------------
+	migrateItemNames(){this.ITEMS.forEach(it=>{if(it.stableId==null) it.stableId=this.nextStableId('item');if(it.name==null) it.name='';if(it.desc==null) it.desc='';});},
+	NEW_ITEM(){this.ITEMS.push({name:'',stableId:this.nextStableId('item'),desc:''});this.curItem=this.ITEMS.length-1;this.REFRESH_ITEM();},
+	SELECT_ITEM(){const sel=document.getElementById('itemList');this.curItem=parseInt(sel.value);this.syncItemUI();},
+	RENAME_ITEM(newName){const it=this.ITEMS[this.curItem];if(!it) return;it.name=String(newName||'').trim().toUpperCase().replace(/[^A-Z0-9_]/g,'_');this.syncItemUI();},
+	SET_ITEM_DESC(desc){const it=this.ITEMS[this.curItem];if(!it) return;it.desc=String(desc||'');},
+	syncItemUI(){
+		const nameInp=document.getElementById('itemName'), descInp=document.getElementById('itemDesc'), sid=document.getElementById('itemStableId');
+		const it=this.ITEMS[this.curItem];
+		if(nameInp) nameInp.value=it?(it.name||''):'';
+		if(descInp) descInp.value=it?(it.desc||''):'';
+		if(sid) sid.textContent=it?it.stableId:'';
+	},
+	REFRESH_ITEM(){
+		const sel=document.getElementById('itemList');
+		if(!sel) return;
+		this.migrateItemNames();
+		sel.innerHTML='';
+		this.ITEMS.forEach((it,i)=>{const o=document.createElement('option');o.value=i;o.textContent=i+(it.name?' '+it.name:'');sel.appendChild(o);});
+		if(this.curItem>=0) sel.value=this.curItem;
+		this.syncItemUI();
+	},
+	// Called from compiled GIVE(idx): idx is a Runtime Index resolved at compile time by
+	// MAGIC.getResourceArg against the ITEM namespace -- same compile-time-resolved static-data
+	// pattern as SPRITE/TILE/MOVIE (see script-magic), since ITEMS, like SPRITES, are authored
+	// ahead of time in the GUI and are not runtime-dynamic the way SOUND banks are.
+	GIVE(idx){if(this.inventory.indexOf(idx)<0) this.inventory.push(idx);},
+	// Called from compiled HASITEM("NAME"): unlike GIVE, this is invoked from inside a general
+	// <EXPR> (registerFunction), whose arguments are always parsed by the generic getExprList
+	// grammar rather than getResourceArg -- so the name arrives as a runtime string, not a
+	// pre-resolved index, and is resolved here by scanning ITEMS the same way
+	// BLACK.SOUND.RESOLVE_NAME resolves WAVE/TRACK names.
+	HASITEM(name){
+		const key=String(name).toUpperCase();
+		const idx=this.ITEMS.findIndex(it=>it&&it.name&&it.name.toUpperCase()===key);
+		if(idx<0) return 0;
+		return this.inventory.indexOf(idx)>=0?1:0;
+	},
+	// ---- CHARACTER / ENEMY (shared ENTITIES list, kind='CHARACTER'|'ENEMY' -- same aliasing
+	// pattern as SPRITE/TILE in script-graphic: two Semantic Name namespaces over one dictionary) --
+	migrateEntityNames(){this.ENTITIES.forEach(e=>{if(e.stableId==null) e.stableId=this.nextStableId('entity');if(e.name==null) e.name='';});},
+	DEFAULT_ENTITY(){return {kind:'ENEMY',name:'',stableId:this.nextStableId('entity'),spriteName:'',hp:10,attack:1,speed:1,ai:'STATIC',attackSoundName:''};},
+	NEW_ENTITY(){this.ENTITIES.push(this.DEFAULT_ENTITY());this.curEntity=this.ENTITIES.length-1;this.REFRESH_ENTITY();},
+	SELECT_ENTITY(){const sel=document.getElementById('entityList');this.curEntity=parseInt(sel.value);this.syncEntityUI();},
+	RENAME_ENTITY(newName){const e=this.ENTITIES[this.curEntity];if(!e) return;e.name=String(newName||'').trim().toUpperCase().replace(/[^A-Z0-9_]/g,'_');this.syncEntityUI();},
+	SET_ENTITY_FIELD(field,value){
+		const e=this.ENTITIES[this.curEntity];
+		if(!e) return;
+		if(field==='kind') e.kind=(value==='CHARACTER')?'CHARACTER':'ENEMY';
+		else if(field==='spriteName') e.spriteName=String(value||'').trim().toUpperCase().replace(/[^A-Z0-9_]/g,'_');
+		else if(field==='attackSoundName') e.attackSoundName=String(value||'').trim().toUpperCase().replace(/[^A-Z0-9_]/g,'_');
+		else if(field==='ai') e.ai=String(value||'STATIC').toUpperCase();
+		else if(field==='hp'||field==='attack'||field==='speed') e[field]=Number(value)||0;
+		this.REFRESH_ENTITY();
+	},
+	syncEntityUI(){
+		const e=this.ENTITIES[this.curEntity];
+		const ids={entityName:'name',entityKind:'kind',entitySprite:'spriteName',entityHp:'hp',entityAttack:'attack',entitySpeed:'speed',entityAi:'ai',entityAttackSound:'attackSoundName'};
+		for(const domId in ids){const el=document.getElementById(domId);if(el) el.value=e?(e[ids[domId]]!=null?e[ids[domId]]:''):'';}
+		const sid=document.getElementById('entityStableId');
+		if(sid) sid.textContent=e?e.stableId:'';
+	},
+	REFRESH_ENTITY(){
+		const sel=document.getElementById('entityList');
+		if(!sel) return;
+		this.migrateEntityNames();
+		sel.innerHTML='';
+		this.ENTITIES.forEach((e,i)=>{const o=document.createElement('option');o.value=i;o.textContent=i+' ['+e.kind+']'+(e.name?' '+e.name:'');sel.appendChild(o);});
+		if(this.curEntity>=0) sel.value=this.curEntity;
+		this.syncEntityUI();
+	},
+	// ---- FLAG ---------------------------------------------------------------------------------
+	// Flags are free-form: unlike SPRITE/ITEM/ENTITY they are not pre-authored Project resources
+	// with a fixed dictionary, so SETFLAG never raises an Unknown-Name compile error -- any
+	// identifier the script author writes becomes a valid flag the first time it's set.
+	SETFLAG(name,val){this.FLAGS[String(name).toUpperCase()]=(val===undefined?true:!!val);},
+	GETFLAG(name){return this.FLAGS[String(name).toUpperCase()]?1:0;}
+};
+</script>
 <script id="script-server">
+
 // SERVER: server list / access panel
 BLACK.SERVER={
 	LIST:[
@@ -2531,7 +3371,6 @@ BLACK.CUI={
 		out.style.color='#ccf';
 		out.textContent='';
 		BLACK.GUI.CLEARLOG();
-		BLACK.GUI.dialogGateOpen=false;
 		BLACK.SYS.ON('GUI');
 		try{
 			const js=MAGIC.compile(document.getElementById('code').value);
@@ -2562,10 +3401,22 @@ BLACK.CUI={
 		['mid-2arg','PRINT MID$("HELLO",2)',false],
 		['dialog','DIALOG "Hello " + "world"',false],
 		['nested-sub-return','SUB OUTER()\nSUB INNER()\nPRINT 1\nENDSUB\nRETURN\nENDSUB',false],
+		['scene','SCENE\nPRINT "A"\nENDSCENE',false],
+		['break-across-scene','FOR I=1 TO 3\nSCENE\nBREAK\nENDSCENE\nNEXT',false],
+		['return-across-scene','SUB F()\nSCENE\nRETURN\nENDSCENE\nENDSUB',false],
 		['break-across-sub','FOR I=1 TO 3\nSUB G()\nBREAK\nENDSUB\nNEXT',true],
 		['continue-across-sub','WHILE 1\nSUB G()\nCONTINUE\nENDSUB\nWEND',true],
 		['break-outside-loop','BREAK',true],
-		['return-outside-sub','RETURN',true]
+		['return-outside-sub','RETURN',true],
+		['resource-numeric-tile','SETTILE 1,1,17',false],
+		['resource-var-tile','LET N=3\nSETTILE 1,1,N',false],
+		['resource-unknown-tile','SETTILE 1,1,ZZZ_NOT_A_REAL_TILE_ZZZ',true],
+		['resource-unknown-qualified','SETTILE 1,1,TILE.ZZZ_NOT_A_REAL_TILE_ZZZ',true],
+		['event-call','EVENT MY_EVENT\nPRINT "hi"\nENDEVENT\nCALL MY_EVENT',false],
+		['event-bare-call','EVENT MY_EVENT2\nPRINT "hi"\nENDEVENT\nMY_EVENT2',false],
+		['call-unknown','CALL NOT_DEFINED_ANYWHERE',true],
+		['setflag-getflag','SETFLAG MYFLAG\nIF FLAG("MYFLAG") THEN\nPRINT "set"\nENDIF',false],
+		['waitzone-compile','LET RESULT=0\nWAITZONE RESULT, 1,1,1, 2,2,1\nPRINT RESULT',false]
 	];const r=[];for(const [n,s,expectFail] of samples){
 		let threw=false,msg='';
 		try{MAGIC.compile(s)}catch(e){threw=true;msg=e.message}
@@ -2585,7 +3436,7 @@ const MAGIC={
 	skip(code){while(this.pos<code.length){let c=code[this.pos];if(c===' '||c==='\t'||c==='\r')this.pos++;else if(c==='\n'){this.pos++;this.line++}else break}},
 	read(code){this.skip(code);if(this.pos>=code.length)return null;this.NUM_RE.lastIndex=this.pos;let m=this.NUM_RE.exec(code);if(m){this.pos=this.NUM_RE.lastIndex;return m[0]};let c=code[this.pos];if(c==='"'){this.STR_RE.lastIndex=this.pos;m=this.STR_RE.exec(code);if(m){this.pos=this.STR_RE.lastIndex;return m[0]}this.pos++;return null}if(',;+-*/=()<>^'.includes(c)){this.pos++;return c}this.ID_RE.lastIndex=this.pos;m=this.ID_RE.exec(code);if(m){this.pos=this.ID_RE.lastIndex;return m[0].toUpperCase()}this.pos++;return null},
 	peek(code){const p=this.pos,l=this.line;const x=this.read(code);this.pos=p;this.line=l;return x},
-	tryGet(parser,code){const p=this.pos,l=this.line;try{return parser.call(this,code)}catch(e){this.pos=p;this.line=l;return null}},
+	tryGet(parser,code){const p=this.pos,l=this.line;try{return parser.call(this,code)}catch(e){if(e&&e.fatal)throw e;this.pos=p;this.line=l;return null}},
 	getOp(code,op){const t=this.read(code);if(t!==op)throw new Error('Syntax Error: expected '+op+' got '+t+' at line '+this.line);return t},
 	getVariable(code){const v=this.read(code);if(!v||!this.ID_CHK.test(v))throw new Error('Syntax Error: expected variable at line '+this.line);return v},
 	getValue(code){return this.read(code)},
@@ -2598,10 +3449,30 @@ const MAGIC={
 	getProgram(code){const out=[];while(true){this.skip(code);if(this.pos>=code.length)break;const p=this.pos,l=this.line;const s=this.tryGet(this.getStmt,code);if(s===null){this.pos=p;this.line=l;break}if(s)out.push(s)}return out.join('\n')},
 	getStmt(code){const p=this.pos,l=this.line;const k=this.read(code);if(!k){this.pos=p;this.line=l;return null}const h=this.DIC.CTRL[k]||this.DIC.USER[k]||this.DIC.BUILTIN[k];if(!h){this.pos=p;this.line=l;return null}return h.call(this,code)},
 	getStmtList(code){const a=[];while(true){const p=this.pos,l=this.line;const s=this.tryGet(this.getStmt,code);if(s===null){this.pos=p;this.line=l;break}if(s)a.push(s)}return a},
-	getForStmt(code){const n=this.getVariable(code);this.getOp(code,'=');const from=this.getExpr(code);this.getOp(code,'TO');const to=this.getExpr(code);let step=this.tryGet(c=>this.getOp(c,'STEP'),code);step=step?this.getExpr(code):'1';this.BLOCKS.push('FOR');const body=this.getStmtList(code);this.getOp(code,'NEXT');this.BLOCKS.pop();const id=this.temp();return '{\nlet '+id+'to=('+to+'), '+id+'step=('+step+');\nfor(let '+n+'=('+from+'); '+id+'step>=0 ? '+n+'<='+id+'to : '+n+'>='+id+'to; '+n+'+='+id+'step){\n'+body.join('\n')+'\n}\n}'},
+	getForStmt(code){const n=this.getVariable(code);this.DECLARED_VARS.add(n);this.getOp(code,'=');const from=this.getExpr(code);this.getOp(code,'TO');const to=this.getExpr(code);let step=this.tryGet(c=>this.getOp(c,'STEP'),code);step=step?this.getExpr(code):'1';this.BLOCKS.push('FOR');const body=this.getStmtList(code);this.getOp(code,'NEXT');this.BLOCKS.pop();const id=this.temp();return '{\nlet '+id+'to=('+to+'), '+id+'step=('+step+');\nfor(let '+n+'=('+from+'); '+id+'step>=0 ? '+n+'<='+id+'to : '+n+'>='+id+'to; '+n+'+='+id+'step){\n'+body.join('\n')+'\n}\n}'},
 	getIfStmt(code){const c=this.getCond(code);this.getOp(code,'THEN');this.BLOCKS.push('IF');const a=this.getStmtList(code);let js='if('+c+'){\n'+a.join('\n')+'\n}';const has=this.tryGet(c=>this.getOp(c,'ELSE'),code);if(has){const b=this.getStmtList(code);js+='else{\n'+b.join('\n')+'\n}'}this.getOp(code,'ENDIF');this.BLOCKS.pop();return js},
 	getWhileStmt(code){const c=this.getCond(code);this.BLOCKS.push('WHILE');const body=this.getStmtList(code);this.getOp(code,'WEND');this.BLOCKS.pop();return 'while('+c+'){\n'+body.join('\n')+'\n}'},
-	getSubStmt(code){const n=this.getVariable(code);this.getOp(code,'(');const params=this.tryGet(this.getVariableList,code)||[];this.getOp(code,')');this.BLOCKS.push('SUB');const savedSub=this.CURRENT_SUB;this.CURRENT_SUB=n;const body=this.getStmtList(code);this.getOp(code,'ENDSUB');this.BLOCKS.pop();this.CURRENT_SUB=savedSub;this.DIC.USER[n]=(c)=>{const args=this.getExprList(c,true)||[];return 'await '+n+'('+args.join(', ')+');'};return 'async function '+n+'('+params.join(', ')+'){\n'+body.join('\n')+'\n}'},
+	getSubStmt(code){const n=this.getVariable(code);this.getOp(code,'(');const params=this.tryGet(this.getVariableList,code)||[];params.forEach(pn=>this.DECLARED_VARS.add(pn));this.getOp(code,')');this.BLOCKS.push('SUB');const savedSub=this.CURRENT_SUB;this.CURRENT_SUB=n;const body=this.getStmtList(code);this.getOp(code,'ENDSUB');this.BLOCKS.pop();this.CURRENT_SUB=savedSub;this.DIC.USER[n]=(c)=>{const args=this.getExprList(c,true)||[];return 'await '+n+'('+args.join(', ')+');'};return 'async function '+n+'('+params.join(', ')+'){\n'+body.join('\n')+'\n}'},
+	// EVENT...ENDEVENT (Phase 2, doc section 10): a zero-argument, name-callable block, i.e.
+	// "SUB with no parameter list and a distinct end keyword". Reuses SUB's exact machinery
+	// (BLOCKS.push('SUB') so RETURN/BREAK/CONTINUE all behave identically inside an EVENT as inside
+	// a SUB) and registers into DIC.USER so the event can be invoked either as a bare statement
+	// (OPEN_TREASURE) or via the explicit CALL keyword (CALL OPEN_TREASURE) -- both compile to the
+	// same 'await OPEN_TREASURE();'. The doc's illustrative pseudocode terminates an EVENT with a
+	// bare END, but END is already a registered CMD_STMT meaning "stop the whole script" (see
+	// DIC.BUILTIN.END below); reusing it here would make getStmtList swallow it as a statement
+	// instead of the block ever seeing it as its terminator -- exactly the collision IF/WHILE/SUB/
+	// SCENE already avoid by using their own distinct ENDIF/WEND/ENDSUB/ENDSCENE tokens, so EVENT
+	// follows the same established convention with ENDEVENT.
+	getEventStmt(code){const n=this.getVariable(code);this.EVENT_NAMES.add(n);this.BLOCKS.push('SUB');const savedSub=this.CURRENT_SUB;this.CURRENT_SUB=n;const body=this.getStmtList(code);this.getOp(code,'ENDEVENT');this.BLOCKS.pop();this.CURRENT_SUB=savedSub;this.DIC.USER[n]=()=>'await '+n+'();';return 'async function '+n+'(){\n'+body.join('\n')+'\n}'},
+	// SCENE...ENDSCENE: a plain sequencing block, not a new scope (unlike SUB) and not a loop --
+	// pushing 'SCENE' onto BLOCKS is purely for symmetry/future use, since inLoop() only special-
+	// cases 'SUB' as a boundary, so BREAK/CONTINUE/RETURN still see straight through a SCENE the
+	// same way they already see through IF. BLACK.GUI.SCENE_ENTER()/SCENE_EXIT() bookend the body
+	// in a try/finally so the scene's input-lock is always released -- even if the body exits via
+	// BREAK, CONTINUE, RETURN, or a thrown runtime error -- without needing every statement inside
+	// to be individually scene-aware.
+	getSceneStmt(code){this.BLOCKS.push('SCENE');const body=this.getStmtList(code);this.getOp(code,'ENDSCENE');this.BLOCKS.pop();return 'BLACK.GUI.SCENE_ENTER();\ntry{\n'+body.join('\n')+'\n}finally{\nBLACK.GUI.SCENE_EXIT();\n}'},
 	getCond(code){return this.getOrExpr(code)},
 	getOrExpr(code){let x=this.getAndExpr(code);while(true){const p=this.pos,l=this.line;if(this.tryGet(c=>this.getOp(c,'OR'),code)===null){this.pos=p;this.line=l;break}x='(('+x+') || ('+this.getAndExpr(code)+'))'}return x},
 	getAndExpr(code){let x=this.getNotExpr(code);while(true){const p=this.pos,l=this.line;if(this.tryGet(c=>this.getOp(c,'AND'),code)===null){this.pos=p;this.line=l;break}x='(('+x+') && ('+this.getNotExpr(code)+'))'}return x},
@@ -2626,18 +3497,331 @@ const MAGIC={
 	registerControl(name,handler){this.DIC.CTRL[name]=handler},
 	registerFunction(name,handler){this.DIC.FUNCTION[name]=handler},
 	DIC:{CTRL:{},BUILTIN:{},USER:{},FUNCTION:{}},
-	compile(code){this.pos=0;this.line=1;this.DIMS={};this.DIC.USER={};this.BLOCKS=[];this.CURRENT_SUB=null;this._temp=0;const js=this.getProgram(code);this.skip(code);if(this.pos<code.length)throw new Error('Syntax Error: unexpected '+this.read(code)+' at line '+this.line);return js}
+	// ==== Semantic Name / Stable ID Architecture (Phase 1) ====================================
+	// Three layers, per the architecture doc: Semantic Name (what a human/AI types, e.g. GOBLIN) ->
+	// Stable ID (what the Project stores permanently, e.g. "sprite.7") -> Runtime Index (the plain
+	// integer array position the existing Runtime already uses, e.g. 17). The Runtime layer itself
+	// is untouched: MAP.DATA cells, MOVIE frames and SOUND bank indices still hold plain integers.
+	// This block only adds the two layers *above* Runtime and a compiler-side resolver that turns a
+	// name back into the same integer a numeric literal would have produced.
+	//
+	// SPRITE/TILE/MOVIE are static Project data (already loaded into BLACK.GRAPHIC before a script
+	// is ever compiled), so they resolve here at COMPILE TIME via NAMES + getResourceArg -- an
+	// unresolvable name is a compile error, never reaches Runtime (doc section 9).
+	// WAVE/NOTE/TRACK live inside SOUND banks that are only populated when SNDLOAD executes *as part
+	// of the running script*, so the compiler cannot know their contents ahead of time; those names
+	// are resolved at Runtime instead, inside BLACK.SOUND.RESOLVE_NAME (see script-sound). This is a
+	// deliberate, documented adaptation of the doc's "always compile-time" model to the fact that
+	// this Runtime's sound resources are dynamically loaded, not static Project data.
+	NAMES:{SPRITE:{},TILE:{},MOVIE:{},ITEM:{},CHARACTER:{},ENEMY:{}},
+	// Tracks every scalar/array/loop/SUB-param name assigned so far in the CURRENT compile pass, so
+	// getResourceArg can tell "unresolved bare word that is a real BASIC variable" (fine, defer to
+	// getExpr) apart from "unresolved bare word that is nothing at all" (compile error, doc F).
+	// Caveat: since this is a single top-to-bottom pass, a variable used before its first LET/FOR/
+	// INPUT/SUB-param assignment will be misreported as an unknown resource name -- acceptable for
+	// Phase 1 since BASIC style here is declare-before-use; a full symbol table is Phase 2/3 scope.
+	DECLARED_VARS:new Set(),
+	// Names of every EVENT block seen so far this compile pass (Phase 2, doc section 10). EVENT
+	// compiles to a plain named async function exactly like SUB (registered into DIC.USER so it's
+	// directly callable, with or without the CALL keyword) -- there's no Runtime Index to resolve
+	// for it, so unlike SPRITE/TILE/MOVIE/ITEM it isn't in MAGIC.NAMES; this set exists purely so
+	// CALL can give a clear "Unknown EVENT" compile error and so getProjectCatalog can list events.
+	EVENT_NAMES:new Set(),
+	// Rebuilt fresh at the start of every compile() so GUI edits (rename/add/reorder sprites or
+	// movies between runs) are always reflected. Throws if two resources in the SAME namespace share
+	// a name (doc section 9) -- SPRITE and TILE intentionally share one dictionary here because in
+	// this engine a "tile" IS a sprite (MAP cells store a sprite index directly; there is no separate
+	// tile bitmap pool), so a GOBLIN sprite is reachable as either SPRITE.GOBLIN or TILE.GOBLIN.
+	// CHARACTER and ENEMY are the same aliasing pattern over BLACK.GAME.ENTITIES (see script-game).
+	buildNames(){
+		const names={SPRITE:{},TILE:{},MOVIE:{},ITEM:{},CHARACTER:{},ENEMY:{}};
+		(BLACK.GRAPHIC.SPRITES||[]).forEach((s,i)=>{
+			if(!s||!s.name) return;
+			const key=s.name.toUpperCase();
+			if(Object.prototype.hasOwnProperty.call(names.SPRITE,key)) throw new Error('Duplicate SPRITE name: '+s.name+' (used by more than one sprite)');
+			names.SPRITE[key]=i;
+			names.TILE[key]=i;
+		});
+		(BLACK.GRAPHIC.MOVIE.LIST||[]).forEach((m,i)=>{
+			if(!m||!m.name) return;
+			const key=m.name.toUpperCase();
+			if(Object.prototype.hasOwnProperty.call(names.MOVIE,key)) throw new Error('Duplicate MOVIE name: '+m.name+' (used by more than one movie)');
+			names.MOVIE[key]=i;
+		});
+		(BLACK.GAME&&BLACK.GAME.ITEMS||[]).forEach((it,i)=>{
+			if(!it||!it.name) return;
+			const key=it.name.toUpperCase();
+			if(Object.prototype.hasOwnProperty.call(names.ITEM,key)) throw new Error('Duplicate ITEM name: '+it.name+' (used by more than one item)');
+			names.ITEM[key]=i;
+		});
+		(BLACK.GAME&&BLACK.GAME.ENTITIES||[]).forEach((e,i)=>{
+			if(!e||!e.name) return;
+			const key=e.name.toUpperCase();
+			const ns=(e.kind==='CHARACTER')?names.CHARACTER:names.ENEMY;
+			if(Object.prototype.hasOwnProperty.call(ns,key)) throw new Error('Duplicate '+e.kind+' name: '+e.name+' (used by more than one '+e.kind.toLowerCase()+')');
+			ns[key]=i;
+		});
+		return names;
+	},
+	// Marks an error as "fatal": tryGet() re-throws these instead of silently swallowing them for
+	// backtracking. Needed because tryGet is used everywhere for ordinary grammar backtracking (e.g.
+	// "is the next token a comma?"), which would otherwise also swallow a genuine Unknown-Name
+	// compile error raised deep inside getResourceArg and just report a confusing generic
+	// "unexpected token" at the call site instead (doc section 9 needs the real message to surface).
+	fatalError(msg){const e=new Error(msg);e.fatal=true;return e;},
+	unknownNameError(ns,key){
+		const dict=this.NAMES[ns]||{};
+		const avail=Object.keys(dict);
+		let msg='Unknown '+ns+': '+key;
+		const stem=key.slice(0,3);
+		const guess=avail.find(n=>n!==key&&(n.startsWith(stem)||key.startsWith(n.slice(0,3))));
+		if(guess){
+			msg+='\nDid you mean: '+guess+'?';
+		} else if(avail.length){
+			msg+='\nAvailable '+ns+':\n  '+avail.join('\n  ');
+		} else {
+			msg+='\nNo '+ns+' resources are named yet (use the '+ns+' editor tab to name one).';
+		}
+		return msg;
+	},
+	// Parses one Semantic Name argument at the current position and resolves it to a numeric Runtime
+	// Index string at COMPILE TIME, falling back to the ordinary <EXPR> grammar (numbers, variables,
+	// function calls) whenever the token in front of us is not a resolvable resource name -- this is
+	// what keeps `SETTILE 10 5 17` (doc A) and `SETTILE 10 5 STONE_WALL` (doc B) compiling to the
+	// same Runtime call (doc C), and keeps every pre-existing script that never used names at all
+	// compiling exactly as before (doc section 9, backward compatibility).
+	// Supports an explicit namespace-qualified form, NAMESPACE.NAME (e.g. TILE.WALL vs SPRITE.WALL,
+	// doc section 9), by peeking for an immediately-following "." + identifier with no space around
+	// it; this is handled locally here rather than by teaching the whole tokenizer about dots, so
+	// ordinary <VARIABLE> parsing everywhere else in the grammar is completely unaffected.
+	getResourceArg(code,ns){
+		const p=this.pos,l=this.line;
+		let tok=this.tryGet(this.getVariable,code);
+		if(tok!==null){
+			if(code[this.pos]==='.'){
+				const dotPos=this.pos;
+				this.pos++;
+				this.ID_RE.lastIndex=this.pos;
+				const m=this.ID_RE.exec(code);
+				if(m&&m.index===dotPos+1){
+					this.pos=this.ID_RE.lastIndex;
+					tok=tok+'.'+m[0].toUpperCase();
+				} else {
+					this.pos=dotPos;
+				}
+			}
+			if(this.peek(code)!=='('){
+				let namespaceName=ns,key=tok;
+				const qualified=tok.includes('.');
+				if(qualified){const parts=tok.split('.');namespaceName=parts[0];key=parts.slice(1).join('.');}
+				const dict=this.NAMES[namespaceName];
+				if(dict){
+					if(Object.prototype.hasOwnProperty.call(dict,key)) return String(dict[key]);
+					if(qualified) throw this.fatalError(this.unknownNameError(namespaceName,key));
+					if(!this.DECLARED_VARS.has(tok)) throw this.fatalError(this.unknownNameError(namespaceName,key));
+				}
+			}
+		}
+		this.pos=p;this.line=l;
+		return this.getExpr(code);
+	},
+	// AI/human-facing read-only snapshot of currently-named Project resources (doc section 9).
+	// Deliberately excludes raw pixel/frame/waveform data -- only names, stable IDs and the runtime
+	// index they currently resolve to, so an AI can see "what exists" without needing the bulky
+	// content. Diff-style AI editing of the Project (doc section 11) is Phase 3 scope, not here.
+	getProjectCatalog(){
+		const names=this.buildNames();
+		const cat={sprites:[],tiles:[],movies:[],waves:[],notes:[],tracks:[],items:[],characters:[],enemies:[],events:Array.from(this.EVENT_NAMES||[])};
+		(BLACK.GRAPHIC.SPRITES||[]).forEach((s,i)=>{if(s&&s.name){cat.sprites.push({name:s.name,stableId:s.stableId,index:i,size:s.size});cat.tiles.push({name:s.name,stableId:s.stableId,index:i});}});
+		(BLACK.GRAPHIC.MOVIE.LIST||[]).forEach((m,i)=>{if(m&&m.name){cat.movies.push({name:m.name,stableId:m.stableId,index:i,frames:m.frames.length});}});
+		for(const bankName in BLACK.SOUND.BANKS){
+			const bank=BLACK.SOUND.BANKS[bankName];
+			(bank.waves||[]).forEach((w,i)=>{if(w&&w.name) cat.waves.push({bank:bankName,name:w.name,index:i});});
+			(bank.notes||[]).forEach((n,i)=>{if(n&&n.name) cat.notes.push({bank:bankName,name:n.name,index:i});});
+			(bank.tracks||[]).forEach((t,i)=>{if(t&&t.name) cat.tracks.push({bank:bankName,name:t.name,index:i});});
+		}
+		(BLACK.GAME&&BLACK.GAME.ITEMS||[]).forEach((it,i)=>{if(it&&it.name) cat.items.push({name:it.name,stableId:it.stableId,index:i,desc:it.desc});});
+		(BLACK.GAME&&BLACK.GAME.ENTITIES||[]).forEach((e,i)=>{
+			if(!e||!e.name) return;
+			const rec={name:e.name,stableId:e.stableId,index:i,spriteName:e.spriteName,hp:e.hp,attack:e.attack,speed:e.speed,ai:e.ai,attackSoundName:e.attackSoundName};
+			(e.kind==='CHARACTER'?cat.characters:cat.enemies).push(rec);
+		});
+		return cat;
+	},
+	// ==== Phase 3: AI Project Edit / Diff Operation / Automatic Validation (doc section 11) ====
+	// A name-addressed CRUD API so an AI/tool can edit the Project (add/change/rename/remove
+	// resources) without ever generating raw JavaScript or touching a Runtime Index directly --
+	// exactly the "AIにJavaScriptを直接生成させることを第一目的にしない" principle (doc section 11)
+	// applied to Project editing, not just gameplay scripts. Every op is addressed by Semantic Name;
+	// CREATE/RENAME assign/keep the stableId, never the caller.
+	// Locates a named resource's backing array + current index. CHARACTER/ENEMY intentionally share
+	// one array (BLACK.GAME.ENTITIES, see script-game) filtered by `kind`, exactly like SPRITE/TILE
+	// share BLACK.GRAPHIC.SPRITES -- so `list` here is always the TRUE underlying array (never a
+	// filtered copy), so index-based mutation below is safe.
+	findByName(type,name){
+		const key=String(name||'').toUpperCase();
+		const t=String(type||'').toUpperCase();
+		if(t==='SPRITE'||t==='TILE') return {list:BLACK.GRAPHIC.SPRITES,index:BLACK.GRAPHIC.SPRITES.findIndex(s=>s&&s.name&&s.name.toUpperCase()===key)};
+		if(t==='MOVIE') return {list:BLACK.GRAPHIC.MOVIE.LIST,index:BLACK.GRAPHIC.MOVIE.LIST.findIndex(m=>m&&m.name&&m.name.toUpperCase()===key)};
+		if(t==='ITEM') return {list:BLACK.GAME.ITEMS,index:BLACK.GAME.ITEMS.findIndex(it=>it&&it.name&&it.name.toUpperCase()===key)};
+		if(t==='CHARACTER'||t==='ENEMY') return {list:BLACK.GAME.ENTITIES,index:BLACK.GAME.ENTITIES.findIndex(e=>e&&e.kind===t&&e.name&&e.name.toUpperCase()===key)};
+		throw new Error('Unknown resource type: '+type+' (expected SPRITE, TILE, MOVIE, ITEM, CHARACTER or ENEMY)');
+	},
+	CREATE(type,name,attrs){
+		const t=String(type||'').toUpperCase();
+		const key=String(name||'').trim().toUpperCase().replace(/[^A-Z0-9_]/g,'_');
+		if(!key) throw new Error('CREATE requires a non-empty name');
+		if(this.findByName(t,key).index>=0) throw new Error('CREATE failed: '+t+' '+key+' already exists');
+		attrs=attrs||{};
+		let record;
+		if(t==='SPRITE'||t==='TILE'){
+			const size=[8,16,32,64].includes(attrs.size)?attrs.size:16;
+			record={size,pixels:new Array(size*size).fill(''),name:key,stableId:BLACK.GRAPHIC.nextStableId('sprite')};
+			BLACK.GRAPHIC.SPRITES.push(record);
+			BLACK.GRAPHIC.REFRESH();
+		} else if(t==='MOVIE'){
+			record=BLACK.GRAPHIC.MOVIE.DEFAULT();
+			record.name=key;
+			BLACK.GRAPHIC.MOVIE.LIST.push(record);
+			BLACK.GRAPHIC.MOVIE.REFRESH();
+		} else if(t==='ITEM'){
+			record={name:key,stableId:BLACK.GAME.nextStableId('item'),desc:attrs.desc||''};
+			BLACK.GAME.ITEMS.push(record);
+			BLACK.GAME.REFRESH_ITEM();
+		} else if(t==='CHARACTER'||t==='ENEMY'){
+			record=BLACK.GAME.DEFAULT_ENTITY();
+			record.kind=t;
+			record.name=key;
+			['spriteName','hp','attack','speed','ai','attackSoundName'].forEach(f=>{if(attrs[f]!==undefined) record[f]=attrs[f];});
+			BLACK.GAME.ENTITIES.push(record);
+			BLACK.GAME.REFRESH_ENTITY();
+		} else {
+			throw new Error('Unknown resource type: '+type);
+		}
+		return record;
+	},
+	MODIFY(type,name,field,value){
+		const {list,index}=this.findByName(type,name);
+		if(index<0) throw new Error('MODIFY failed: '+type+' '+name+' not found');
+		if(field==='name') throw new Error('MODIFY cannot change name -- use a RENAME op instead (keeps stableId fixed)');
+		if(field==='stableId') throw new Error('MODIFY cannot change stableId -- it is permanent by design');
+		list[index][field]=value;
+		this.refreshAfterEdit(type);
+		return list[index];
+	},
+	RENAME(type,name,newName){
+		const t=String(type||'').toUpperCase();
+		const {list,index}=this.findByName(t,name);
+		if(index<0) throw new Error('RENAME failed: '+t+' '+name+' not found');
+		const key=String(newName||'').trim().toUpperCase().replace(/[^A-Z0-9_]/g,'_');
+		if(!key) throw new Error('RENAME requires a non-empty new name');
+		const dup=this.findByName(t,key);
+		if(dup.index>=0 && dup.index!==index) throw new Error('RENAME failed: '+t+' '+key+' already exists');
+		list[index].name=key;
+		this.refreshAfterEdit(t);
+		return list[index];
+	},
+	// Deleting a SPRITE (unlike ITEM/MOVIE/ENTITY) is dangerous: MAP cells, MOVIE frames and
+	// floor/ceil store the current Runtime Index directly, and removing an array element shifts
+	// every later index down by one -- silently repointing every reference after it to the wrong
+	// sprite. So this refuses to delete a SPRITE that's still directly referenced, and otherwise
+	// reindexes every remaining raw-index reference above the deleted slot to compensate. This is
+	// exactly the class of bug the whole Stable ID layer exists to prevent for scripts (which
+	// reference by name and are unaffected either way) -- but MAP/MOVIE's raw integer storage still
+	// needs this explicit care on structural edits, which is why DELETE lives in this Phase 3 API
+	// rather than being safe to do by splicing BLACK.GRAPHIC.SPRITES directly.
+	DELETE(type,name){
+		const t=String(type||'').toUpperCase();
+		const {list,index}=this.findByName(t,name);
+		if(index<0) throw new Error('DELETE failed: '+t+' '+name+' not found');
+		if(t==='SPRITE'||t==='TILE'){
+			const usedBy=[];
+			if(BLACK.GRAPHIC.MAP.DATA.indexOf(index)>=0) usedBy.push('MAP cells');
+			if(BLACK.GRAPHIC.MAP.floorIdx===index) usedBy.push('MAP floor');
+			if(BLACK.GRAPHIC.MAP.ceilIdx===index) usedBy.push('MAP ceiling');
+			BLACK.GRAPHIC.MOVIE.LIST.forEach((m,i)=>{if(m.frames.indexOf(index)>=0) usedBy.push('MOVIE frame ('+(m.name||('MOVIE'+i))+')');});
+			if(usedBy.length) throw new Error('DELETE refused: SPRITE '+name+' is still used by '+usedBy.join(', ')+'. Remove those references first.');
+		}
+		list.splice(index,1);
+		if(t==='SPRITE'||t==='TILE'){
+			for(let i=0;i<BLACK.GRAPHIC.MAP.DATA.length;i++){if(BLACK.GRAPHIC.MAP.DATA[i]>index) BLACK.GRAPHIC.MAP.DATA[i]--;}
+			if(BLACK.GRAPHIC.MAP.floorIdx>index) BLACK.GRAPHIC.MAP.floorIdx--;
+			if(BLACK.GRAPHIC.MAP.ceilIdx>index) BLACK.GRAPHIC.MAP.ceilIdx--;
+			BLACK.GRAPHIC.MOVIE.LIST.forEach(m=>{m.frames=m.frames.map(f=>f>index?f-1:f);});
+			BLACK.GRAPHIC.curSprite=Math.min(BLACK.GRAPHIC.curSprite,BLACK.GRAPHIC.SPRITES.length-1);
+		}
+		this.refreshAfterEdit(t);
+		return true;
+	},
+	refreshAfterEdit(type){
+		const t=String(type||'').toUpperCase();
+		if(t==='SPRITE'||t==='TILE'){BLACK.GRAPHIC.REFRESH();BLACK.GRAPHIC.MAP.REFRESH();BLACK.GRAPHIC.MOVIE.REFRESH();}
+		else if(t==='MOVIE'){BLACK.GRAPHIC.MOVIE.cur=Math.min(Math.max(BLACK.GRAPHIC.MOVIE.cur,0),BLACK.GRAPHIC.MOVIE.LIST.length-1);BLACK.GRAPHIC.MOVIE.REFRESH();}
+		else if(t==='ITEM'){BLACK.GAME.curItem=Math.min(Math.max(BLACK.GAME.curItem,0),BLACK.GAME.ITEMS.length-1);BLACK.GAME.REFRESH_ITEM();}
+		else if(t==='CHARACTER'||t==='ENEMY'){BLACK.GAME.curEntity=Math.min(Math.max(BLACK.GAME.curEntity,0),BLACK.GAME.ENTITIES.length-1);BLACK.GAME.REFRESH_ENTITY();}
+	},
+	// Applies a list of {op,type,name,...} diff operations in order (doc section 11's worked
+	// example is exactly this op format). Not transactional: each op is tried independently and
+	// its own {ok,error} is reported, so one failing op (e.g. a duplicate name) does not roll back
+	// ops already applied earlier in the same list -- callers that need all-or-nothing semantics
+	// should call validateProject() first and inspect every result before trusting a partial batch.
+	applyDiff(ops){
+		const results=[];
+		(ops||[]).forEach(op=>{
+			try{
+				let value;
+				const kind=String((op&&op.op)||'').toUpperCase();
+				if(kind==='CREATE') value=this.CREATE(op.type,op.name,op.attrs);
+				else if(kind==='MODIFY') value=this.MODIFY(op.type,op.name,op.field,op.value);
+				else if(kind==='RENAME') value=this.RENAME(op.type,op.name,op.newName);
+				else if(kind==='DELETE') value=this.DELETE(op.type,op.name);
+				else throw new Error('Unknown diff op: '+(op&&op.op));
+				results.push({op,ok:true,value});
+			}catch(e){
+				results.push({op,ok:false,error:e.message});
+			}
+		});
+		return results;
+	},
+	// Automatic Validation (doc section 11): duplicate-name detection (buildNames already enforces
+	// this at compile time; surfaced here too so it can be checked WITHOUT compiling a script) plus
+	// dangling free-text cross-references. ENTITY.spriteName/attackSoundName are convenience fields
+	// (not compiler-resolved -- see the getResourceArg comment on why WAVE/TRACK can't be compile-
+	// time resolved), so a typo there compiles fine but silently does nothing useful; this is the
+	// intended place to catch that instead. attackSoundName is NOT checked against SOUND bank
+	// contents since banks are runtime-dynamic (not loaded at Project-authoring time) -- same
+	// reasoning as getResourceArg's WAVE/TRACK carve-out.
+	validateProject(){
+		const issues=[];
+		try{ this.buildNames(); }catch(e){ issues.push({level:'error',message:e.message}); }
+		const spriteNames={};
+		(BLACK.GRAPHIC.SPRITES||[]).forEach(s=>{if(s&&s.name) spriteNames[s.name.toUpperCase()]=true;});
+		(BLACK.GAME.ENTITIES||[]).forEach(e=>{
+			if(!e) return;
+			if(e.spriteName && !spriteNames[e.spriteName.toUpperCase()]) issues.push({level:'warning',message:(e.kind||'ENTITY')+' '+(e.name||'(unnamed)')+' references unknown SPRITE name "'+e.spriteName+'"'});
+		});
+		(BLACK.GRAPHIC.SPRITES||[]).forEach((s,i)=>{if(s&&!s.name) issues.push({level:'info',message:'Unnamed SPRITE at index '+i+' is not name-referenceable by scripts or AI'});});
+		(BLACK.GRAPHIC.MOVIE.LIST||[]).forEach((m,i)=>{if(m&&!m.name) issues.push({level:'info',message:'Unnamed MOVIE at index '+i+' is not name-referenceable by scripts or AI'});});
+		(BLACK.GAME.ITEMS||[]).forEach((it,i)=>{if(it&&!it.name) issues.push({level:'info',message:'Unnamed ITEM at index '+i+' is not name-referenceable by scripts or AI'});});
+		(BLACK.GAME.ENTITIES||[]).forEach((e,i)=>{if(e&&!e.name) issues.push({level:'info',message:'Unnamed '+(e.kind||'ENTITY')+' at index '+i+' is not name-referenceable by scripts or AI'});});
+		return issues;
+	},
+	// ==== end Phase 3 ============================================================================
+	// ==== end Semantic Name / Stable ID Architecture ==========================================
+	compile(code){this.pos=0;this.line=1;this.DIMS={};this.DIC.USER={};this.BLOCKS=[];this.CURRENT_SUB=null;this._temp=0;this.DECLARED_VARS=new Set();this.EVENT_NAMES=new Set();this.NAMES=this.buildNames();const js=this.getProgram(code);this.skip(code);if(this.pos<code.length)throw new Error('Syntax Error: unexpected '+this.read(code)+' at line '+this.line);return js}
 };
 // CTRL_STMT keywords are registered into DIC.CTRL, same dictionary-dispatch convention as registerCommand.
 MAGIC.registerControl('FOR',MAGIC.getForStmt);
 MAGIC.registerControl('IF',MAGIC.getIfStmt);
 MAGIC.registerControl('WHILE',MAGIC.getWhileStmt);
 MAGIC.registerControl('SUB',MAGIC.getSubStmt);
+MAGIC.registerControl('EVENT',MAGIC.getEventStmt);
+MAGIC.registerControl('SCENE',MAGIC.getSceneStmt);
 // Built-in flat commands. All additions below use the same DIC interface.
-MAGIC.registerCommand('LET',function(code){const n=this.getVariable(code);const p=this.pos,l=this.line;if(this.tryGet(c=>this.getOp(c,'('),code)!==null){const idx=this.getExprList(code);this.getOp(code,')');this.getOp(code,'=');const v=this.getExpr(code);return n+'['+this.getLinearIndex(n,idx)+'] = '+v+';'}this.pos=p;this.line=l;this.getOp(code,'=');return n+' = '+this.getExpr(code)+';'});
-MAGIC.registerCommand('DIM',function(code){const n=this.getVariable(code);this.getOp(code,'(');const dims=this.getIntList(code).map(Number);this.getOp(code,')');let total=1,strides=new Array(dims.length);for(let i=dims.length-1;i>=0;i--){strides[i]=total;total*=dims[i]}this.DIMS[n]={dims,strides,total};return n.endsWith('$')?'var '+n+' = new Array('+total+').fill(\'\');':'var '+n+' = new Float64Array('+total+');'});
+MAGIC.registerCommand('LET',function(code){const n=this.getVariable(code);this.DECLARED_VARS.add(n);const p=this.pos,l=this.line;if(this.tryGet(c=>this.getOp(c,'('),code)!==null){const idx=this.getExprList(code);this.getOp(code,')');this.getOp(code,'=');const v=this.getExpr(code);return n+'['+this.getLinearIndex(n,idx)+'] = '+v+';'}this.pos=p;this.line=l;this.getOp(code,'=');return n+' = '+this.getExpr(code)+';'});
+MAGIC.registerCommand('DIM',function(code){const n=this.getVariable(code);this.DECLARED_VARS.add(n);this.getOp(code,'(');const dims=this.getIntList(code).map(Number);this.getOp(code,')');let total=1,strides=new Array(dims.length);for(let i=dims.length-1;i>=0;i--){strides[i]=total;total*=dims[i]}this.DIMS[n]={dims,strides,total};return n.endsWith('$')?'var '+n+' = new Array('+total+').fill(\'\');':'var '+n+' = new Float64Array('+total+');'});
 MAGIC.registerCommand('PRINT',function(code){const a=this.getExprList(code);return 'BLACK.CUI.PRINT('+a.join(', ')+');'});
-MAGIC.registerCommand('INPUT',function(code){return this.getVariableList(code).map(n=>n.endsWith('$')?n+' = await BLACK.GUI.INPUT_ASYNC("'+n+'?");':n+' = Number(await BLACK.GUI.INPUT_ASYNC("'+n+'?"));').join('\n')});
+MAGIC.registerCommand('INPUT',function(code){const vars=this.getVariableList(code);vars.forEach(n=>this.DECLARED_VARS.add(n));return vars.map(n=>n.endsWith('$')?n+' = await BLACK.GUI.INPUT_ASYNC("'+n+'?");':n+' = Number(await BLACK.GUI.INPUT_ASYNC("'+n+'?"));').join('\n')});
 // DIALOG: centered "press E/Enter to continue" message box, distinct from INPUT (which collects
 // typed text). See BLACK.GUI.DIALOG_ASYNC and the DIALOG_STMT entry in the grammar doc.
 MAGIC.registerCommand('DIALOG',function(code){const a=this.getExprList(code);return 'await BLACK.GUI.DIALOG_ASYNC(['+a.join(', ')+'].join(" "));'});
@@ -2659,17 +3843,64 @@ MAGIC.registerCommand('SNDSTOPALL',function(){return 'BLACK.SOUND.SNDSTOPALL();'
 // pixel/map data through CUI text -- they only point at content already authored on the GRAPHIC/GUI
 // pages by index, so CUI stays a behavior/orchestration layer and content stays GUI-owned (no
 // two-way data sync needed between the CUI text and each page's editor state).
-MAGIC.registerCommand('SETTILE',function(code){const a=this.getExprList(code);return 'BLACK.GRAPHIC.MAP.SET('+a.join(',')+');'});
-MAGIC.registerCommand('SETFLOOR',function(code){const a=this.getExprList(code);return 'BLACK.GRAPHIC.MAP.FLOOR('+a.join(',')+');'});
-MAGIC.registerCommand('SETCEIL',function(code){const a=this.getExprList(code);return 'BLACK.GRAPHIC.MAP.CEIL('+a.join(',')+');'});
+MAGIC.registerCommand('SETTILE',function(code){const x=this.getExpr(code);this.getOp(code,',');const y=this.getExpr(code);this.getOp(code,',');const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.SET('+x+','+y+','+t+');'});
+MAGIC.registerCommand('SETFLOOR',function(code){const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.FLOOR('+t+');'});
+MAGIC.registerCommand('SETCEIL',function(code){const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.CEIL('+t+');'});
 MAGIC.registerCommand('TELEPORT',function(code){const a=this.getExprList(code);return 'BLACK.GUI.TELEPORT('+a.join(',')+');'});
 MAGIC.registerCommand('SETDOORKEY',function(code){const a=this.getExprList(code);return 'BLACK.GUI.SETDOORKEY('+a.join(',')+');'});
-MAGIC.registerCommand('PLAYMOVIE',function(code){const a=this.getExprList(code);return 'BLACK.GRAPHIC.MOVIE.PLAY_INDEX('+a.join(',')+');'});
+// PLAYMOVIE is awaited: BLACK.GUI.PLAY_MOVIE() returns a Promise that resolves once the movie has
+// played through, so text/sound issued after PLAYMOVIE is always sequenced after it -- the same
+// blocking pattern DIALOG already uses above. It does not by itself stop player movement; wrap it
+// in a SCENE...ENDSCENE block for that (see MAGIC.getSceneStmt / BLACK.GUI.SCENE_ENTER).
+MAGIC.registerCommand('PLAYMOVIE',function(code){const m=this.getResourceArg(code,'MOVIE');return 'await BLACK.GUI.PLAY_MOVIE('+m+');'});
+// WAITZONE result, x1,y1,r1, x2,y2,r2 (doc section 5): blocks until the player walks within r1 of
+// (x1,y1) or r2 of (x2,y2), assigning 1 or 2 to `result` accordingly (0 if cancelled -- see
+// BLACK.GUI._cancelZoneWait). result is a plain BASIC variable, not a resource name, so it takes
+// the normal getVariable()/DECLARED_VARS path, same as INPUT's target variable -- there is no
+// NAMES lookup here since a zone is just numbers the script itself supplies, not pre-authored
+// Project data.
+MAGIC.registerCommand('WAITZONE',function(code){
+	const n=this.getVariable(code);
+	this.DECLARED_VARS.add(n);
+	this.getOp(code,',');
+	const a=this.getExprList(code);
+	return n+' = await BLACK.GUI.WAIT_ZONE('+a.join(',')+');';
+});
+// GIVE (Phase 2, doc section 10): ITEM is static Project data authored ahead of time in the GAME/
+// ITEM editor (same as SPRITE/TILE/MOVIE), so its name resolves to a Runtime Index at COMPILE TIME
+// via getResourceArg, exactly like SETTILE's tile argument.
+MAGIC.registerCommand('GIVE',function(code){const it=this.getResourceArg(code,'ITEM');return 'BLACK.GAME.GIVE('+it+');'});
+// SETFLAG (Phase 2): flags are free-form, not a pre-authored dictionary resource -- any identifier
+// becomes valid the moment it's set, so this reads a bare <VARIABLE> token directly (no
+// getResourceArg/NAMES lookup, no Unknown-Name error is possible or appropriate here).
+MAGIC.registerCommand('SETFLAG',function(code){const n=this.getVariable(code);return 'BLACK.GAME.SETFLAG('+JSON.stringify(n)+');'});
+MAGIC.registerCommand('CLEARFLAG',function(code){const n=this.getVariable(code);return 'BLACK.GAME.SETFLAG('+JSON.stringify(n)+',false);'});
+// CALL (Phase 2, doc section 10): an explicit way to invoke a SUB or EVENT by name; bare
+// `OPEN_TREASURE` (no CALL) already works too, since both SUB and EVENT register directly into
+// DIC.USER (see getSubStmt/getEventStmt) -- CALL is sugar that also gives a clear compile error
+// (rather than a generic "unexpected token") when the name isn't defined at all.
+MAGIC.registerCommand('CALL',function(code){
+	const n=this.getVariable(code);
+	if(!this.DIC.USER[n]){
+		const known=Array.from(this.EVENT_NAMES);
+		throw this.fatalError('Unknown EVENT/SUB: '+n+(known.length?'\nAvailable EVENT:\n  '+known.join('\n  '):''));
+	}
+	return this.DIC.USER[n](code);
+});
 // Expression functions: each handler returns JavaScript expression text.
 const F=MAGIC.registerFunction.bind(MAGIC);
 F('ABS',a=>'Math.abs('+a[0]+')');F('INT',a=>'Math.floor('+a[0]+')');F('SGN',a=>'Math.sign('+a[0]+')');F('SQR',a=>'Math.sqrt('+a[0]+')');
 F('SIN',a=>'Math.sin('+a[0]+')');F('COS',a=>'Math.cos('+a[0]+')');F('TAN',a=>'Math.tan('+a[0]+')');F('ASIN',a=>'Math.asin('+a[0]+')');F('ACOS',a=>'Math.acos('+a[0]+')');F('ATN',a=>'Math.atan('+a[0]+')');F('EXP',a=>'Math.exp('+a[0]+')');F('LOG',a=>'Math.log('+a[0]+')');F('LOG10',a=>'Math.log10('+a[0]+')');
 F('RND',a=>'Math.random()');F('PI',a=>'Math.PI');F('LEN',a=>'String('+a[0]+').length');F('LEFT$',a=>'String('+a[0]+').substring(0,'+a[1]+')');F('RIGHT$',a=>'String('+a[0]+').slice(-('+a[1]+'))');F('MID$',a=>'String('+a[0]+').substring(('+a[1]+')-1'+(a[2]!==undefined?',('+a[1]+')-1+('+a[2]+')':'')+')');F('STR$',a=>'String('+a[0]+')');F('VAL',a=>'Number('+a[0]+')');F('MIN',a=>'Math.min('+a.join(',')+')');F('MAX',a=>'Math.max('+a.join(',')+')');
+// HASITEM/FLAG (Phase 2): registerFunction arguments are always parsed by the generic getExprList
+// grammar (see getAtom above), which has no hook for getResourceArg -- so unlike GIVE/SETFLAG
+// (statements with full control of their own grammar), these take a quoted <STRING> and resolve the
+// name at RUNTIME, the same pattern already used for SNDPLAYWAVE/SNDPLAYNOTE/SNDPLAYTRACK's WAVE/
+// NOTE/TRACK name arguments (see BLACK.SOUND.RESOLVE_NAME) -- chosen for the same reason: it stays
+// unambiguous with an ordinary bare-word variable reference without teaching the function-call
+// grammar a new special case.
+F('HASITEM',a=>'BLACK.GAME.HASITEM('+a[0]+')');
+F('FLAG',a=>'BLACK.GAME.GETFLAG('+a[0]+')');
 </script>
 </body>
 </html>
