@@ -1,15 +1,64 @@
-
 <!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<title>BLACKMAGIC v67</title>
+<title>BLACKMAGIC v94</title>
 <style>
 		.base	{background-color:#000; color:#ccf; user-select:none}
 		.unit	{background-color:#000; color:#ccf; border:solid 1px #ccf; user-select:none; margin:2px; padding:2px}
 </style>
 <script type="text/doc" id="doc">
 # BLACKMAGIC Structured BASIC
+# v94: generated SOUND LOAD now escapes CR/LF before embedding MML in one CUI string;
+# v95: GUI CLEAR now clears the canvas AND stops all active SOUND bank tracks/voices, matching the SOUND STOP behavior.
+# v96: GUI CLEAR now cancels/clears active INPUT/DIALOG/CHOICE UI state, hides [E] CONTINUE, clears hidden input, and resolves pending waits so no stale dialog state remains.
+# v80: prepare-once / mutate-in-place discipline.
+# GENERATE SCENARIO SET builds MAP + SPRITE data once (MAP.beginBulk/endBulk: one editor
+# buildTable + one light-map dirty at the end). Stamp/carve/clear write MAP.DATA in place.
+# _ensureSprite is create-once. Same-seed QUEST_APPLY is a no-op rebuild. LOAD_SAMPLE does
+# not re-REFRESH the map table. After RUN, per-frame loops allocate nothing steady-state:
+# entity AI uses SPAWN-cached numbers and distSq; isEntityBlocking honors excludeId;
+# RENDER_ENTITIES reuses scratch pool + fixed sort comparator; light map reuses buffer;
+# wall missing-pixel uses fixed _flatRGB; loop() stamps one _frameNow. Loops only read
+# references and rewrite fields/flags on existing objects.
+# WAIT_ZONE/WAIT_KILL reuse fixed slots (no per-wait object alloc); zone check uses
+# distSq and skips the second zone when the script only passed one.
+# When PERF WORST F and W rise together the bottleneck is own UPDATE+RENDER (not external
+# GC alone). Floor/ceiling samples every 2nd column + Uint32 pixel pack; wall RAY_STEP=3.
+# v78: two fixes reported after using v77's LIGHT command.
+# (1) FOG/RANGE units were confusing and mostly dead air. FOG set fogMinBrightness directly as a
+# raw 0..1 brightness fraction, so natural-looking values like 1..5 silently clamped to 1 (fully
+# bright, fog disabled) -- "the setting does nothing". RANGE multiplied maxSteps, a hidden 64-96
+# tile engine draw-distance constant, so full darkness landed 35+ tiles out by default -- past
+# almost every corridor's sightline, which is why fog only ever seemed to touch "far away" and
+# near/mid distance looked untouched. FOG is now a 0..10 "how dark it gets" strength (higher always
+# darker, no saturate-back-to-no-effect); RANGE is now a literal tile count at which brightness
+# reaches the FOG floor. QUEST_SCRIPT's emitted LIGHT FOG/RANGE values were rescaled to match.
+# (2) A real, reproducible performance spike: BLACK.GRAPHIC.MAP.SET() -- called by gameplay code
+# such as a door opening or a cracked wall breaking, not just the map editor -- rebuilt the ENTIRE
+# SIZE*SIZE (up to 64x64=4096 cell) editor table as one big innerHTML replacement on every single
+# call, even when the map-editor panel wasn't the visible tab. SET() now patches just the one
+# changed cell's DOM element directly; buildTable()'s full rebuild is unchanged and still used
+# wherever many cells change at once (bulk fill, scenario generation, resize/load). The map
+# editor's own single-cell paint stroke was switched to the same lightweight path; its fill-bucket
+# tool still does one full rebuild after the bulk change, which is correct there.
+# v77: new LIGHT command (RADIUS/TORCH/FOG/RANGE subcommands, same pattern as CAMERA/SPEED) exposes
+# BLACK.GUI's existing distance-fog/torch-glow lighting model to BASIC scripts -- previously
+# fogMinBrightness/fogRangeScale/LIGHT_RADIUS/LIGHT_BONUS were fixed engine constants with no script
+# access at all. RADIUS/TORCH mark the precomputed light map dirty (rebuilt lazily next RENDER());
+# FOG/RANGE feed the per-frame distance-fog formula directly, no rebuild needed. GENERATE SCENARIO
+# SET's QUEST_SCRIPT now emits a LIGHT FOG/RANGE/RADIUS/TORCH line tuned to the actual landmark mix
+# chosen for that map's areas, reusing WALL_MATERIAL's existing CATACOMB/RUIN/GRAVEYARD (gloomy) vs
+# CASTLE/FORT (torch-heavy) classification rather than a second one: more gloomy landmarks pull fog
+# darker and closer, more torch landmarks widen/brighten the torch glow; a plain mix keeps the
+# engine's own defaults.
+# v72: enemy sprite/entity/AI integration.
+# v72: enemy sprite/entity/AI integration. Enemy templates now receive dedicated ENEMY_* sprites; SPAWN creates ephemeral live instances with explicit state; enemy AI uses IDLE/CHASE/ATTACK/HURT/DEAD transitions.
+# v75: uses the uploaded v74-renamed source as the base; normalizes the file to UTF-8 without BOM, clears Project scenario status before generation, and makes the CUI compile/runtime output directly selectable and copyable.
+# v73: scenario generation now switches to CUI after generation and explicitly resets the generated source view.
+# v70: scenario-generation hardening. The remaining `.push` failure was narrowed to an unguarded scenario-owned array reference: the macro/area/structure objects are newly resolved during generation, so their `bound_quest_ids` / `quest_ids` arrays are now revalidated immediately before the first MACRO/MESO push as well as after structure stamping. QUEST_SCRIPT also no longer assumes the old default GUI position is walkable. After the final scenario map/landmark/path edits, `_findSafeStart()` searches the actual STATIC map for a floor cell with four-direction clearance and TELEPORTs the GUI there immediately, so the player cannot begin at the historical `{x:1.5,y:1.5}` cell `(1,1)` when that cell is a wall. The generated LOCATE uses the same safe start.
+# v72: Enemy resources now have generated ENEMY_* sprites, ENEMY templates are bound to those exact sprites, SPAWN creates live runtime instances with explicit AI state, and the runtime state machine transitions IDLE -> CHASE -> ATTACK with HURT/DEAD terminal handling.
+# v70: Fixes scenario collection initialization/legacy project guards and hardens spawner event data before emission. Independent enemy SPAWNERS remain separate from LANDMARK/STRUCTURE. to GENERATE SCENARIO SET. A spawner is separate from LANDMARK/STRUCTURE data so quest targets and landmark resolution are never tied to destroying the enemy source. Each MESO area receives one deterministic spawner; QUEST_SCRIPT emits existing WAITZONE/SPAWN/WAITKILL statements for a fixed number of enemies per wave, with multiple waves, and SPAWNERS are persisted under game.scenario. No new BASIC command or runtime subsystem is added.
 # v54: command namespace protection + command/subcommand consolidation. Lookup priority is CORE > CTRL > USER > EXT; duplicate registration is rejected by default.
 # v67: replaced v66's baked-image wall preset with 4 new procedural wall materials generated as data,
 # in the same style and pipeline as the existing STONE/BRICK/WOOD builders (_buildXTile() returning a
@@ -571,13 +620,22 @@ QUESTSTATE(<STRING>) QUESTCOUNT(<STRING>) QUESTSLOTS(<STRING>) QUESTBOND$(<STRIN
 # WAITKILL at boss_x/boss_y) or 'PUZZLE' (three CHOICE seals asking which claim was won at which landmark,
 # a wrong answer costing HP and repeating that seal). Entering on a COMPROMISE costs 20 HP up front, so the
 # two-of-three route is open but expensive.
+# Enemy spawners (v68). SPAWNERS are independent scenario data, not LANDMARK/STRUCTURE records and not a
+# fourth quest requirement kind. GENERATE SCENARIO SET creates one SPAWNER per MESO area at a deterministic
+# floor site separated from the area's landmark and quest sites. Each has an ENEMY template name, count per wave,
+# wave count, four nearby spawn points, trigger='ENTER' and mode='ONCE'. The generator only records the spawner
+# and its encounter parameters; it does not make landmark destruction a condition for stopping enemy generation.
+# QUEST_SCRIPT emits an EV_SP_* EVENT for each spawner. That event WAITZONEs at the spawner location, SPAWNs the
+# whole wave before waiting on any member, then WAITKILLs each member so all enemies in the wave are active at once.
+# After all waves the event ends and the next generated scenario event can continue. Because this is lowered to
+# existing WAITZONE/SPAWN/WAITKILL, there is no new BASIC command and no separate spawner runtime.
 # Script emission. QUEST_SCRIPT(seed) returns a complete BASIC program: one EVENT per quest (WAITZONE on that
 # quest's cell, then DIALOG/GIVE, DIALOG/SETFLAG, a CHOICE loop for an ALLY, or the boss/puzzle trial for the
 # MACRO, then QUESTDONE), followed by
 # MAP MODE/MAP SEED/QUESTGEN, LOCATE and the CALLs in dependency order. It calls QUEST_SYNC_ASSETS first so
 # every GIVE argument resolves at compile time. It emits only statements this grammar already had -- the
 # scenario layer generates scripts, it does not extend the runtime.
-# Persistence & search. QUESTS/STRUCTURES/AREAS/SCENARIO_SET_ID are saved in Project JSON under game.scenario (they
+# Persistence & search. QUESTS/STRUCTURES/AREAS/SPAWNERS/SCENARIO_SET_ID are saved in Project JSON under game.scenario (they
 # are generated authoring data, unlike inventory/FLAGS which stay per-session), and FIND registers a QUEST
 # section so quest ids, areas and structures are searchable from both FIND() and the FIND tab.
   CAMERA FOV deg -- <CMD_STMT>; deg is degrees (not radians -- the one user-facing angle unit in
@@ -624,11 +682,20 @@ QUESTSTATE(<STRING>) QUESTCOUNT(<STRING>) QUESTSLOTS(<STRING>) QUESTBOND$(<STRIN
 7. Semantic Name / Stable ID layer (see the "Semantic Name Resolution" section of the doc block above): SPRITE, MOVIE, ITEM, CHARACTER, ENEMY, WAVE and TRACK list items carry a `name` (uppercase, AI/human-facing, may be '') and SPRITE/MOVIE/ITEM/CHARACTER/ENEMY also carry a `stableId` (permanent, assigned once via a module-local `nextStableId()`, never changed by rename/reorder). Runtime storage (MAP.DATA cells, MOVIE frames, SOUND bank indices, GAME.inventory) stays plain integers -- never store a name or stableId where a Runtime Index is expected. Any new name-referenceable resource type added later should follow the same pattern: a `name`/`stableId` field on the data record, a `migrateNames()` to backfill old Project JSON, a `RENAME()` that changes only `name`, and (only if the resource is static Project data available before compile, like SPRITE/MOVIE/ITEM/CHARACTER/ENEMY -- NOT if it's populated at Runtime by a script statement, like SOUND banks) an entry in MAGIC.NAMES resolved via MAGIC.getResourceArg at compile time.
 8. Phase 5 scope note (CHARACTER/ENEMY/MAP): this engine is a single-map, first-person raycast dungeon crawler. CHARACTER/ENEMY (script-game, BLACK.GAME.ENTITIES) are named template DATA; SPAWN/TOUCH/DAMAGE/HURT/HEAL/HP/ALIVE/PLAYERHP/WAITKILL (script-gui+script-magic, doc section 17) let a script place a live instance, and as of v40 there IS a real-time movement+combat runtime on top: ai='CHASE' entities step toward the player each frame (straight-line, wall-collision-checked, no pathfinding), living entities block the player's movement (isEntityBlocking), and kind='ENEMY' entities deal contact damage on their own without any script involvement, alongside the player's own Space-triggered melee (ATTACK_NEAREST). `ai` (movement) and `kind` (contact damage) are independent switches -- see section 17 for exactly how they combine. Do not add pathfinding, ranged/AOE attacks, or multi-enemy coordination without discussing scope with the user first -- straight-line CHASE and single-target melee are the current ceiling, and going further is a new engine feature, not a tuning change. Likewise MAP is not a separate Semantic Name namespace: this engine has exactly one map, and per-cell naming already went through the TILE namespace in Phase 1 (MAP SETTILE STONE_WALL) -- multi-map/AREA support is, again, a large new feature outside this layer's scope.
 9. Phase 3 AI Project Edit API (script-magic, doc section 11; UI in the PROJECT tab, wired through BLACK.SYS.AI): MAGIC.findByName(type,name) locates a named resource's true backing array + index (SPRITE/TILE share BLACK.GRAPHIC.SPRITES, CHARACTER/ENEMY share BLACK.GAME.ENTITIES filtered by `kind` -- never a filtered copy, so callers can safely mutate list[index] in place). MAGIC.CREATE/MODIFY/RENAME/DELETE are name-addressed, never take a raw Runtime Index, and MAGIC.applyDiff(ops) runs a list of {op,type,name,...} objects through them, collecting a per-op {ok,error} result (not transactional). MAGIC.validateProject() re-runs buildNames()'s duplicate-name check plus flags dangling free-text cross-references (e.g. an ENTITY.spriteName that doesn't match any named SPRITE) that compile() has no way to catch since those fields aren't compiler-resolved. If MODIFY ever needs to become field-restricted again (see the code-comments doc, script-magic, for the `kind` mutation hazard this was written to avoid), the allowlist belongs in one shared table consulted by both CREATE and MODIFY, not duplicated between them.
-11. Phase 9 Scenario Layer (script-game's STRUCTURE_CATALOG/ORG_ROLES/QUEST_*, doc section 19; UI in the PROJECT tab): the generator's output is DATA plus generated BASIC source -- it never gains its own runtime. When a scenario needs a new behavior, add it as emitted statements in QUEST_SCRIPT/_eventLines built from commands that already exist, not as a new engine subsystem hiding behind a quest field. Two specific traps: (a) "each area needs its own map" is the AREA feature ai-instructions #8 rules out -- BLACK.GAME.AREAS is a list of rectangles on the ONE 64x64 map, addressed by coordinates and WAITZONE, and it must stay that way: no per-area MAP.DATA, no loading screen, no second MAP namespace; (b) a landmark type is a row in STRUCTURE_CATALOG (shape + footprint + tags_org + meso_bias + micro_acts) and an organisation is a row in ORG_ROLES, so adding either is a data edit -- resist adding a parallel special-case code path for one landmark. REQ_KINDS is deliberately exactly ITEM/INFO/ALLY: a fourth kind means touching QUEST_SCRIPT, QUEST_SYNC_ASSETS and the slot-filling logic together, so discuss it first.
+11. Phase 9 Scenario Layer (script-game's STRUCTURE_CATALOG/ORG_ROLES/QUEST_*, doc section 19; UI in the PROJECT tab): the generator's output is DATA plus generated BASIC source -- it never gains its own runtime. When a scenario needs a new behavior, add it as emitted statements in QUEST_SCRIPT/_eventLines built from commands that already exist, not as a new engine subsystem hiding behind a quest field. Two specific traps: (a) "each area needs its own map" is the AREA feature ai-instructions #8 rules out -- BLACK.GAME.AREAS is a list of rectangles on the ONE 64x64 map, addressed by coordinates and WAITZONE, and it must stay that way: no per-area MAP.DATA, no loading screen, no second MAP namespace; (b) a landmark type is a row in STRUCTURE_CATALOG (shape + footprint + tags_org + meso_bias + micro_acts) and an organisation is a row in ORG_ROLES, so adding either is a data edit -- resist adding a parallel special-case code path for one landmark. SPAWNERS are deliberately separate from STRUCTURES/LANDMARKS and from REQ_KINDS: they are encounter data lowered by QUEST_SCRIPT to existing WAITZONE/SPAWN/WAITKILL, so they must not become a fourth quest requirement kind or a new runtime subsystem. REQ_KINDS is deliberately exactly ITEM/INFO/ALLY: a fourth kind means touching QUEST_SCRIPT, QUEST_SYNC_ASSETS and the slot-filling logic together, so discuss it first.
 10. Phase 4 RECIPE / FIND (script-magic's getRecipeStmt + script-find, doc section 16; UI in the FIND tab): RECIPE~ENDRECIPE is data-only (BLACK.GAME.RECIPE) -- like ai-instructions #8's CHARACTER/ENEMY note, do not attach a map-generation/asset-spawning runtime to WORLD's TYPE without discussing scope first. FIND's section registry (BLACK.FIND.SECTIONS/REGISTER_SECTION) is the single search implementation for both the FIND(...) expression-function and the FIND tab's GUI -- a new searchable resource type registers a section here rather than either surface growing its own search code.
 </script>
 <script type="text/doc" id="code-comments">
 # CODE COMMENTS (moved out of script-* tags per ai-instructions #1b -- see that rule for why).
+
+## script-game additions
+- v72: ENEMY resources are backed by dedicated generated ENEMY_* SPRITEs rather than borrowing the first named sprite. `_ensureEnemy()` creates the named enemy template after SPAWNERS are generated; `BLACK.GUI.SPAWN_ENTITY()` creates the per-RUN live instance. Live instances carry state/stateSince and the GUI runtime applies a small finite-state controller: IDLE when outside aggro range, CHASE while approaching, ATTACK in contact, HURT briefly after damage, and DEAD after hp reaches zero.
+
+- line 1  [anchor: SPAWNERS:[]]  Scenario SPAWNERS are independent encounter authoring data, deliberately separate from STRUCTURES/LANDMARKS. Each generated MESO area gets one deterministic spawner with a fixed enemy template, enemies-per-wave, wave count and four nearby spawn points. The spawner does not become a quest requirement and does not make destroying a landmark a prerequisite for stopping enemy generation.
+- line 1  [anchor: _spawnerSite(area,s,st,salt){]  Chooses a deterministic site inside the area's rectangle, preferring candidates outside the landmark footprint and away from existing quest sites, then clears a small floor pad. This is placement data only; the landmark's footprint and quest semantics remain untouched.
+- line 1  [anchor: _generateSpawners(seed,key){]  Generates one independent spawner for every MESO area. count and waves are deterministic from the same scenario seed, so regeneration with the same seed reproduces the same encounter.
+- line 1  [anchor: _spawnerEventLines(sp){]  Lowers each spawner to existing WAITZONE/SPAWN/WAITKILL statements. All enemies in a wave are spawned before any WAITKILL begins, so the wave fights simultaneously. A player death exits the generated event; no new spawner runtime or BASIC command is introduced.
+
 # Organized by originating <script id="..."> tag, in that tag's original source order. Each
 # entry's "line N" is the line number WITHIN THAT SCRIPT TAG'S CONTENT as of the move (script-
 # tags are edited often, so treat it as an approximate locator, not a permanent address); the
@@ -750,6 +817,8 @@ QUESTSTATE(<STRING>) QUESTCOUNT(<STRING>) QUESTSLOTS(<STRING>) QUESTBOND$(<STRIN
   on purpose -- see the game.items/entities note above for the same distinction.
 
 ## script-gui
+
+- v80: prepare-once / mutate-in-place. GENERATE SCENARIO SET uses MAP.beginBulk/endBulk (one buildTable). Stamp/carve/clear write DATA in place. Same-seed QUEST_APPLY skips rebuild. Runtime loops only rewrite fields on existing objects (entity pool, fixed sort cmp, reused light map, _flatRGB).
 
 - line 2  [anchor: BLACK.GUI={]
   GUI: raycasting mini first-person view (WASD/turn) renderer
@@ -1428,7 +1497,7 @@ QUESTSTATE(<STRING>) QUESTCOUNT(<STRING>) QUESTSLOTS(<STRING>) QUESTBOND$(<STRIN
   ==== Phase 3: AI Project Edit / Diff Operation / Automatic Validation (doc section 11) ====
   A name-addressed CRUD API so an AI/tool can edit the Project (add/change/rename/remove
   resources) without ever generating raw JavaScript or touching a Runtime Index directly --
-  exactly the "AIにJavaScriptを直接生成させることを第一目的にしない" principle (doc section 11)
+  exactly the "AI縺ｫJavaScript繧堤峩謗･逕滓・縺輔○繧九％縺ｨ繧堤ｬｬ荳逶ｮ逧・↓縺励↑縺・ principle (doc section 11)
   applied to Project editing, not just gameplay scripts. Every op is addressed by Semantic Name;
   CREATE/RENAME assign/keep the stableId, never the caller.
   Locates a named resource's backing array + current index. CHARACTER/ENEMY intentionally share
@@ -1523,6 +1592,10 @@ MAGIC.registerCommandGroup('MAP',{
 	SETTILE:function(code){const x=this.getExpr(code);this.getOp(code,',');const y=this.getExpr(code);this.getOp(code,',');const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.SET('+x+','+y+','+t+');'},
 	SETFLOOR:function(code){const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.FLOOR('+t+');'},
 	SETCEIL:function(code){const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.CEIL('+t+');'},
+	FLOORTILE:function(code){const x=this.getExpr(code);this.getOp(code,',');const y=this.getExpr(code);this.getOp(code,',');const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.SETFLOOR_AT('+x+','+y+','+t+');'},
+	CEILTILE:function(code){const x=this.getExpr(code);this.getOp(code,',');const y=this.getExpr(code);this.getOp(code,',');const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.SETCEIL_AT('+x+','+y+','+t+');'},
+	FILLFLOOR:function(code){const x1=this.getExpr(code);this.getOp(code,',');const y1=this.getExpr(code);this.getOp(code,',');const x2=this.getExpr(code);this.getOp(code,',');const y2=this.getExpr(code);this.getOp(code,',');const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.FILL_FLOOR('+x1+','+y1+','+x2+','+y2+','+t+');'},
+	FILLCEIL:function(code){const x1=this.getExpr(code);this.getOp(code,',');const y1=this.getExpr(code);this.getOp(code,',');const x2=this.getExpr(code);this.getOp(code,',');const y2=this.getExpr(code);this.getOp(code,',');const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.FILL_CEIL('+x1+','+y1+','+x2+','+y2+','+t+');'},
 	FILL:function(code){
 		const x1=this.getExpr(code);this.getOp(code,',');
 		const y1=this.getExpr(code);this.getOp(code,',');
@@ -1702,7 +1775,7 @@ MAGIC.registerCommand('SETFLAG',function(code){const n=this.getVariable(code);re
 
 </script>
 </head>
-<body class="base" oncontextmenu="return false;" onload="BLACK.SYS.INIT()">
+<body class="base" oncontextmenu="return true;" onload="BLACK.SYS.INIT()">
 <h4>BLACKMAGIC</h4>
 <div id="navUI" class="unit">
 <button class="unit" data-tab="CUI" onclick="BLACK.SYS.ON('CUI')">CUI</button>
@@ -1849,7 +1922,7 @@ REM dialog overlay (DISMISS_DIALOG empties it) -- otherwise the box, still full 
 REM this trial's scrollback, would keep covering part of the view while walking to
 REM the door, since nothing else ever clears it.
 DIALOG "All four bolts are open! The vault door is unlocked.\nOpen the GUI tab, walk up to the gold door, and press\nE (or tap the on-screen button) to swing it open."</textarea>
-<pre id="out" class="unit"></pre>
+<textarea id="out" class="unit" cols="80" rows="20" readonly style="user-select:text;-webkit-user-select:text;white-space:pre;overflow:auto;resize:vertical"></textarea>
 </div>
 <div id="GUI" class="unit panel" style="display:none">
 <h4>GUI</h4>
@@ -1980,6 +2053,9 @@ DIALOG "All four bolts are open! The vault door is unlocked.\nOpen the GUI tab, 
 <button class="unit" data-tab="TRACK" onclick="BLACK.SOUND.PAGE('TRACK')">TRACK</button>
 <button class="unit" data-tab="MASTER" onclick="BLACK.SOUND.PAGE('MASTER')">MASTER</button>
 </div>
+<div class="unit row" style="border-color:#99F">
+<label>ACTIVE SOUND BANK: </label><select id="soundBankList" class="unit" onchange="BLACK.SOUND.SELECT_BANK_UI()"></select><span id="soundBankName" class="unit" style="margin-left:8px">editor</span>
+</div>
 <div id="SOUND_WAVE" class="unit panel" style="display:none;border-color:#99F">
 <div class="unit row" style="border-color:#66F">
 <label>WAVE: </label><select id="waveList" class="unit" onchange="BLACK.SOUND.WAVE.SELECT()"></select>
@@ -2010,7 +2086,7 @@ DIALOG "All four bolts are open! The vault door is unlocked.\nOpen the GUI tab, 
 <label>Q: </label><input type="range" id="waveQ" min="0" max="1000" value="500" oninput="BLACK.SOUND.WAVE.UPDATE()">
 </div>
 <div class="unit row" style="border-color:#66F">
-<label style="display:block;margin-bottom:4px">FILTER RESPONSE — drag to edit CUTOFF (horiz) / Q (vert)</label>
+<label style="display:block;margin-bottom:4px">FILTER RESPONSE 窶・drag to edit CUTOFF (horiz) / Q (vert)</label>
 <svg id="waveFilterSvg" viewBox="0 0 300 100" style="width:100%;max-width:400px;height:120px;background:#000;display:block;touch-action:none">
 <line id="filtZero" x1="10" y1="39.5" x2="290" y2="39.5" stroke="#446" stroke-width="1" stroke-dasharray="2,2"></line>
 <path id="filtFill" fill="#66F" fill-opacity="0.15" stroke="none" d=""></path>
@@ -2020,7 +2096,7 @@ DIALOG "All four bolts are open! The vault door is unlocked.\nOpen the GUI tab, 
 <div id="waveFilterReadout" style="font-size:12px;margin-top:2px">TYPE: - CUTOFF: - Q: -</div>
 </div>
 <div class="unit row" style="border-color:#66F">
-<label style="display:block;margin-bottom:4px">ENVELOPE (A/D/S/R) — drag to edit</label>
+<label style="display:block;margin-bottom:4px">ENVELOPE (A/D/S/R) 窶・drag to edit</label>
 <svg id="waveEnvSvg" viewBox="0 0 300 100" style="width:100%;max-width:400px;height:120px;background:#000;display:block;touch-action:none">
 <path id="envFill" fill="#66F" fill-opacity="0.15" stroke="none" d=""></path>
 <path id="envLine" fill="none" stroke="#ccf" stroke-width="1.5" d=""></path>
@@ -2186,9 +2262,11 @@ No server module connected.</pre>
 <button class="unit" onclick="BLACK.SYS.PROJECT.LOAD_SAMPLE_EXIT8()">LOAD THE LOOP SAMPLE</button>
 <button class="unit" onclick="BLACK.SYS.PROJECT.LOAD_SAMPLE_FANTASY()">LOAD FANTASY DEMO</button>
 <button class="unit" onclick="BLACK.SYS.PROJECT.LOAD_SAMPLE_SCENARIO()">GENERATE SCENARIO SET</button>
+<button class="unit" onclick="BLACK.SYS.PROJECT.LOAD_SAMPLE_OPEN_WORLD()">GENERATE OPEN WORLD</button>
 <button class="unit" onclick="BLACK.SYS.PROJECT.DUMP_SCENARIO()">DUMP SCENARIO</button>
 <label style="margin-left:6px">SEED <input id="projectScenarioSeed" class="unit" type="number" value="123456" style="width:96px"></label>
 </div>
+<div>GENERATE OPEN WORLD: 64x64 open field (CLAY/GRASS/GLASS floors, SKY ceiling) with scattered huts, rocks and ivy walls — not room/corridor dungeons. GENERATE SCENARIO SET remains the dungeon quest layout (stone floor, dark ceiling, 2x2 areas).</div>
 <div>GENERATE SCENARIO SET builds the full 64x64 map and splits it 2x2 into four 32x32 areas: three MESO areas (a landmark plus three MICRO event sites spread around it) and one MACRO area holding the final trial, a boss fight or a three-seal puzzle. Each landmark carries its own organisation / role / tension axis; the 13 quests' requirements are typed ITEM / INFO / ALLY; the ITEM, CHARACTER and boss ENEMY records they name are created for you; and a ready-to-RUN program (one EVENT per quest, each waiting on its own zone) is written into the CUI code box. Two of the three MESO areas open the final gate, all three open it at full strength. Walls are textured by landmark type -- STONE (ashlar) for CHURCH, TORCH (lit sconce) for CASTLE/FORT, CRACKED for CATACOMB/RUIN/GRAVEYARD, WATER (wet stone) for CLIFF/RIVER, BRICK for TOWN/SCHOOL, MUD (earth brick) for VILLAGE, WOOD (planks) for PORT/FOREST/BEACH -- so structures read clearly against the floor instead of blending into one flat gray. Same SEED, same world.</div>
 <textarea id="projectText" class="unit" cols="80" rows="12" placeholder="Click EXPORT to dump the current project as JSON here, or paste a saved project JSON and click IMPORT."></textarea>
 <pre id="projectOut" class="unit">READY</pre>
@@ -2216,7 +2294,8 @@ BLACK.SYS={
 	nextStableId(prefix){this._sidSeq++;return prefix+'.'+this._sidSeq;},
 	STATUS(el,text,state){
 		if(!el) return;
-		el.textContent=text;
+		if(el.tagName==='TEXTAREA' || el.tagName==='INPUT') el.value=String(text);
+		else el.textContent=text;
 		el.style.color = state==='ok' ? '#8f8' : state==='err' ? '#f88' : '#ccf';
 	},
 	HIGHLIGHT(navId,name){
@@ -2270,9 +2349,15 @@ BLACK.SYS={
 					master:{bpm:S.MASTER.bpm,vol:S.MASTER.vol}
 				},
 				game:{
-					items:BLACK.GAME.ITEMS,
-					entities:BLACK.GAME.ENTITIES,
-					scenario:{set_id:BLACK.GAME.SCENARIO_SET_ID,quests:BLACK.GAME.QUESTS,structures:BLACK.GAME.STRUCTURES,areas:BLACK.GAME.AREAS}
+					items:(BLACK.GAME&&BLACK.GAME.ITEMS)||[],
+					entities:(BLACK.GAME&&BLACK.GAME.ENTITIES)||[],
+					scenario:{
+						set_id:(BLACK.GAME&&BLACK.GAME.SCENARIO_SET_ID)||null,
+						quests:(BLACK.GAME&&BLACK.GAME.QUESTS)||[],
+						structures:(BLACK.GAME&&BLACK.GAME.STRUCTURES)||[],
+						areas:(BLACK.GAME&&BLACK.GAME.AREAS)||[],
+						spawners:(BLACK.GAME&&BLACK.GAME.SPAWNERS)||[]
+					}
 				}
 			};
 		},
@@ -2335,6 +2420,7 @@ BLACK.SYS={
 			BLACK.GAME.QUESTS = (sc&&sc.quests&&sc.quests.length)?sc.quests:[];
 			BLACK.GAME.STRUCTURES = (sc&&sc.structures&&sc.structures.length)?sc.structures:[];
 			BLACK.GAME.AREAS = (sc&&sc.areas&&sc.areas.length)?sc.areas:[];
+			BLACK.GAME.SPAWNERS = (sc&&sc.spawners&&sc.spawners.length)?sc.spawners:[];
 			BLACK.GAME.SCENARIO_SET_ID = (sc&&sc.set_id)?sc.set_id:null;
 			BLACK.GAME.inventory = [];
 			BLACK.GAME.FLAGS = {};
@@ -2797,27 +2883,96 @@ BLACK.SYS={
 			BLACK.SYS.STATUS(out,'FANTASY DEMO loaded into CUI code.\nPress RUN (open GUI for CHOICE keys 1-3).\nRECIPE preset DARK_FANTASY applied.','ok');
 		},
 
+		LOAD_SAMPLE_OPEN_WORLD(){
+			const seedEl=document.getElementById('projectScenarioSeed');
+			const seed=seedEl?(parseInt(seedEl.value)||123456):123456;
+			const status=document.getElementById('projectOut');
+			if(status){status.textContent='OPEN WORLD GENERATE START\nSEED '+seed;status.style.color='#ccf';}
+			try{
+				BLACK.GAME.OPEN_WORLD_GENERATE(seed,64);
+				// GENERATE only builds and loads the runnable CUI source.
+				// SOUND is started only when the generated CUI is executed by RUN.
+				const openWorldMML=BLACK.GAME._mmlOpenWorld();
+				BLACK.SOUND.LOAD_BANK('openworld',openWorldMML,true);
+				const snd=BLACK.GAME._emitSoundLoadLines('openworld',openWorldMML);
+				const code=[
+					'REM ==== OPEN WORLD 64x64 (scattered obstacles, not dungeon rooms) ====',
+					'REM Floor: CLAY/GRASS/GLASS patches  Ceiling: SKY',
+					'REM Walls: HUT (cabins), ROCK, IVY stone, WOOD posts',
+					'RENDER QUALITY 1',
+					'LIGHT FOG 2',
+					'LIGHT RANGE 16',
+					'CAMERA RANGE 48'
+				].concat(snd).concat([
+					'LOCATE '+(BLACK.GUI.player.x.toFixed(1))+', '+(BLACK.GUI.player.y.toFixed(1))+', 0',
+					'SOUND PLAYWAVE "openworld", "CHIME"',
+					'DIALOG "Open fields. Cabins, rocks and ivy walls stand as obstacles — not dungeon corridors."',
+					'JOURNAL "Entered the open world."'
+				]).join('\n');
+				const el=document.getElementById('code');
+				if(el){el.value=code;el.scrollTop=0;}
+				BLACK.SYS.STATUS(document.getElementById('projectOut'),
+					'OPEN WORLD ready\nSEED '+seed+'  MAP '+BLACK.GRAPHIC.MAP.SIZE+'x'+BLACK.GRAPHIC.MAP.SIZE
+					+'\nFloor: CLAY + GRASS/GLASS patches\nCeiling: SKY'
+					+'\nObstacles: wooden huts, rocks, ivy walls, wood posts'
+					+'\nSOUND BANK: openworld (TRACK BGM / SE CHIME HIT ALERT / WAVE STEP)'
+					+'\nRUN in CUI to start GUI + BGM/SE, then explore.','ok');
+				if(BLACK.WORLD&&BLACK.WORLD.MAP&&BLACK.WORLD.MAP.syncUI) BLACK.WORLD.MAP.syncUI();
+				BLACK.SYS.ON('CUI');
+			}catch(e){
+				BLACK.SYS.STATUS(document.getElementById('projectOut'),'OPEN WORLD ERROR\n'+(e&&e.stack?e.stack:String(e)),'err');
+			}
+		},
 		LOAD_SAMPLE_SCENARIO(){
 			const seedEl=document.getElementById('projectScenarioSeed');
 			const seed=seedEl?(parseInt(seedEl.value)||123456):123456;
+			const status=document.getElementById('projectOut');
+			if(status){status.textContent='SCENARIO GENERATE START\nSEED '+seed;status.style.color='#ccf';}
+			BLACK.GAME.SCENARIO_DEBUG_RESET();
+			try{
+			BLACK.GAME.SCENARIO_DEBUG_STAGE('SCENARIO_LOAD','QUEST_APPLY_DEMO_MAP');
 			BLACK.GAME.QUEST_APPLY_DEMO_MAP(seed);
+			// GENERATE only builds and loads the runnable CUI source.
+			// SOUND is started only when the generated CUI is executed by RUN.
+			const scenarioMML=BLACK.GAME._mmlDungeon();
+			BLACK.SOUND.LOAD_BANK('scenario',scenarioMML,true);
 			const code=BLACK.GAME.QUEST_SCRIPT(seed);
 			const el=document.getElementById('code');
-			if(el) el.value=code;
+			if(el){
+				el.value=code;
+				el.scrollTop=0;
+			}
 			const st=(BLACK.GAME.STRUCTURES||[]).map(s=>s.type+'['+(BLACK.GAME.WALL_MATERIAL[s.type]||'STONE')+']@'+s.origin_x+','+s.origin_y).join(' / ');
 			const out=document.getElementById('projectOut');
 			const bonds=BLACK.GAME.QUESTS.filter(q=>q.scale==='MESO').map(q=>q.area_id+' '+q.id+' '+(q.tags_bond||[]).join(' ')).join('\n  ');
 			const macro=BLACK.GAME.QUEST_GET('MACRO_A');
+			const spawners=BLACK.GAME.SPAWNERS||[];
 			const areas=(BLACK.GAME.AREAS||[]).map(a=>a.id+' '+a.kind+' '+a.structure_type+' ['+a.x0+','+a.y0+'-'+a.x1+','+a.y1+']').join('\n  ');
 			BLACK.SYS.STATUS(out,'SCENARIO SET ready\nSET '+BLACK.GAME.SCENARIO_SET_ID+'\nSEED '+seed+'  MAP '+BLACK.GRAPHIC.MAP.SIZE+'x'+BLACK.GRAPHIC.MAP.SIZE
 				+'\nAreas (2x2):\n  '+areas
 				+'\nStructures: '+st
 				+'\nQuests: '+BLACK.GAME.QUESTS.length+' (1 MACRO / 3 MESO / 9 MICRO)'
 				+'\nFinal trial: '+(macro?macro.macro_kind+(macro.boss_name?' ('+macro.boss_name+')':' (3 seals)'):'-')
+				+'\nSpawners: '+spawners.length+' (independent enemy encounters)'
 				+'\nMeso axes:\n  '+bonds
-				+'\nITEM/CHARACTER assets were created for every ITEM/ALLY requirement.\nRUN in CUI (open GUI and walk to each zone).','ok');
-			if(BLACK.GRAPHIC&&BLACK.GRAPHIC.MAP&&BLACK.GRAPHIC.MAP.REFRESH) BLACK.GRAPHIC.MAP.REFRESH();
+				+'\nITEM/CHARACTER assets were created for every ITEM/ALLY requirement.'
+				+'\nSOUND BANK: scenario (TRACK BGM / SE ALERT HIT / WAVE STEP)'
+				+'\nRUN in CUI to start GUI + BGM/SE (walk to each zone).','ok');
 			if(BLACK.WORLD&&BLACK.WORLD.MAP&&BLACK.WORLD.MAP.syncUI) BLACK.WORLD.MAP.syncUI();
+			if(BLACK.GAME&&BLACK.GAME.REFRESH_ITEM) BLACK.GAME.REFRESH_ITEM();
+			if(BLACK.GAME&&BLACK.GAME.REFRESH_ENTITY) BLACK.GAME.REFRESH_ENTITY();
+			BLACK.GAME.SCENARIO_DEBUG_STAGE('CUI_READY','generated code loaded');
+			BLACK.GAME.SCENARIO_DEBUG.endedAt=performance.now();
+			// GENERATE SCENARIO SET is a Project action, but its primary output is the runnable CUI program.
+			// Switch to CUI only after generation has completed so the user immediately sees the generated source.
+			BLACK.SYS.ON('CUI');
+			const cui=document.getElementById('code');
+			if(cui){cui.focus();cui.setSelectionRange(0,0);}
+
+			}catch(e){
+				BLACK.GAME.SCENARIO_DEBUG_ERROR(BLACK.GAME.SCENARIO_DEBUG.stage,BLACK.GAME.SCENARIO_DEBUG.last,e);
+				BLACK.SYS.STATUS(document.getElementById('projectOut'),'SCENARIO ERROR\n'+(e&&e.stack?e.stack:String(e)),'err');
+			}
 		},
 		DUMP_SCENARIO(){
 			const out=document.getElementById('projectOut');
@@ -2862,6 +3017,83 @@ BLACK.GUI={
 	cameraRange:null,
 	moveSpeed:0.06,
 	turnSpeed:0.05,
+	// --- Lighting -------------------------------------------------------------------------------
+	// Two effects, both driven by numbers the raycast already computes so no extra per-pixel work
+	// is added beyond a couple of multiplies:
+	//  1) Distance fog: reuses rowDistance (floor/ceiling) and perp (walls, already kept in
+	//     depthBuf) to darken far geometry. Since rowDistance is largest right at the horizon and
+	//     smallest at the top/bottom screen edges (see RENDER()'s floor/ceiling loop), this alone
+	//     produces "near top/bottom = bright, near horizon = dark" for free.
+	//  2) Torch glow: a small brightness bonus near WALL_TORCH tiles. Precomputed once into
+	//     _lightMap (a flat brightness grid, same indexing as GRAPHIC.MAP.DATA) whenever the map
+	//     changes -- not every frame -- so RENDER() only ever does an O(1) array lookup per column
+	//     (walls) or per pixel (floor/ceiling, keyed off the world tile already sampled for texture).
+	fogMinBrightness:0.04, // brightness floor for far geometry -- low enough to read as "swallowed by darkness", not just dim
+	fogRangeTiles:14, // v78: distance in TILES at which brightness reaches fogMinBrightness (was a fraction of the hidden maxSteps draw-distance constant, which put full darkness 35+ tiles out by default -- far past most corridor sightlines, so near/mid distance looked untouched by fog)
+	LIGHT_RADIUS:3, // tiles a torch brightens outward
+	LIGHT_BONUS:0.85, // brightness added at a torch tile itself, fading to 0 at LIGHT_RADIUS
+	_flatRGB:[85,85,85],
+	_lightMap:null,
+	_lightMapSize:0,
+	_lightDirty:true,
+	markLightDirty(){this._lightDirty=true;this._renderDirty=true;},
+	// v77: setters for the LIGHT command, so a running BASIC script (or GENERATE SCENARIO SET's
+	// generated program) can tune the atmosphere instead of it being fixed engine constants.
+	// RADIUS/TORCH change what _buildLightMap() bakes per tile, so they mark it dirty for a
+	// rebuild on the next RENDER(); FOG/RANGE feed straight into the per-frame brightness formula
+	// (see RENDER()'s rowBrightness line) with no precomputed grid to invalidate.
+	SET_LIGHT_RADIUS(n){this.LIGHT_RADIUS=Math.max(0,Math.min(16,Number(n)||0));this.markLightDirty();},
+	SET_LIGHT_BONUS(n){this.LIGHT_BONUS=Math.max(0,Math.min(2,Number(n)||0));this.markLightDirty();},
+	// v78: FOG used to set fogMinBrightness directly as a raw 0..1 brightness fraction, so the
+	// natural round numbers someone reaches for (1, 2, 5...) silently clamped to 1 -- fully bright,
+	// i.e. fog disabled -- which read as "this setting does nothing". Rescaled to a 0..10 "how dark
+	// it gets" strength: every value in that range now does something visibly different, and
+	// higher always means darker instead of saturating back to no-effect partway up the range.
+	SET_FOG_MIN(n){const strength=Math.max(0,Math.min(10,Number(n)||0));this.fogMinBrightness=1-strength/10;},
+	// v78: RANGE used to multiply maxSteps (the hidden 64-96 tile engine draw-distance constant),
+	// so full darkness landed 35+ tiles out by default -- past nearly every corridor's sightline,
+	// which is why fog looked like it only ever affected "far away". Now a literal tile count, so
+	// e.g. RANGE 10 visibly darkens things well within normal room/corridor distances.
+	SET_FOG_RANGE(n){this.fogRangeTiles=Math.max(2,Math.min(48,Number(n)||14));},
+	_buildLightMap(){
+		const map=BLACK.GRAPHIC&&BLACK.GRAPHIC.MAP;
+		this._lightDirty=false;
+		// STATIC mode only: the light map is a full-grid precompute, which needs a finite map.
+		// INFINITE mode's chunks are generated lazily/unbounded, so torch glow is skipped there
+		// (distance fog still applies) rather than trying to precompute an unbounded grid.
+		if(!map||!BLACK.WORLD||!BLACK.WORLD.MAP||BLACK.WORLD.MAP.MODE!=='STATIC'){this._lightMap=null;this._lightMapSize=0;return;}
+		const S=map.SIZE,R=this.LIGHT_RADIUS;
+		const torchSpr=(BLACK.GRAPHIC.SPRITES||[]).findIndex(s=>s&&s.name==='WALL_TORCH');
+		let light=this._lightMap;
+		if(!light||this._lightMapSize!==S||light.length!==S*S) light=new Float32Array(S*S);
+		else light.fill(0);
+		if(torchSpr>=0){
+			for(let y=0;y<S;y++){
+				for(let x=0;x<S;x++){
+					if(map.DATA[y*S+x]!==torchSpr) continue;
+					const y0=Math.max(0,y-R),y1=Math.min(S-1,y+R);
+					const x0=Math.max(0,x-R),x1=Math.min(S-1,x+R);
+					for(let ny=y0;ny<=y1;ny++){
+						for(let nx=x0;nx<=x1;nx++){
+							const d=Math.sqrt((nx-x)*(nx-x)+(ny-y)*(ny-y));
+							if(d>R) continue;
+							const b=this.LIGHT_BONUS*(1-d/R);
+							const i=ny*S+nx;
+							if(b>light[i]) light[i]=b;
+						}
+					}
+				}
+			}
+		}
+		this._lightMap=light; this._lightMapSize=S;
+	},
+	// brightness bonus (0 if no light map / out of bounds / no nearby torch) for a map tile
+	_lightAt(mx,my){
+		if(!this._lightMap) return 0;
+		const S=this._lightMapSize;
+		if(mx<0||my<0||mx>=S||my>=S) return 0;
+		return this._lightMap[my*S+mx];
+	},
 	SET_CAMERA_FOV(deg){this.cameraFov=Math.min(179,Math.max(1,Number(deg)||60))*Math.PI/180;this._recalcPlayerRadius();},
 	SET_CAMERA_RANGE(n){this.cameraRange=Math.max(1,Math.floor(Number(n))||1);},
 	SET_SPEED_MOVE(n){this.moveSpeed=Math.max(0,Number(n)||0);},
@@ -2895,9 +3127,18 @@ BLACK.GUI={
 	SPAWN_ENTITY(entityIdx,x,y){
 		const tpl=BLACK.GAME.ENTITIES[entityIdx];
 		if(!tpl) return -1;
-		const spriteIdx=BLACK.GRAPHIC.SPRITES.findIndex(s=>s&&s.name===tpl.spriteName);
+		let spriteIdx=BLACK.GRAPHIC.SPRITES.findIndex(s=>s&&s.name===tpl.spriteName);
+		if(spriteIdx<0 && tpl.kind==='ENEMY'){
+			spriteIdx=BLACK.GAME._ensureEnemySprite(tpl.name,entityIdx+4100,tpl.name);
+			tpl.spriteName=BLACK.GRAPHIC.SPRITES[spriteIdx]?BLACK.GRAPHIC.SPRITES[spriteIdx].name:tpl.spriteName;
+		}
 		const id=this._nextEntityId++;
-		this.liveEntities.push({id,entityIdx,spriteIdx,x,y,hp:tpl.hp,alive:true,_lastAttackAt:0});
+		const speed=Number(tpl.speed)||1;
+		const attackCd=Number(tpl.aiAttackCooldown)||(1000/Math.max(0.25,speed));
+		const aiRange=Number(tpl.aiRange)||6;
+		const aiContact=Number(tpl.aiContactRange)||this.CONTACT_RANGE;
+		this.liveEntities.push({id,entityIdx,spriteIdx,x:Number(x)||0,y:Number(y)||0,hp:Number(tpl.hp)||1,alive:true,state:tpl.aiInitial||'IDLE',stateSince:0,_lastAttackAt:0,_speed:speed,_attackCd:attackCd,_aiRange:aiRange,_aiContact:aiContact,_aiRangeSq:aiRange*aiRange,_aiContactSq:aiContact*aiContact,_step:speed*this.ENEMY_MOVE_SCALE,_kind:tpl.kind||'ENEMY',_ai:tpl.ai||'STATIC',_attack:Number(tpl.attack)||0,_attackSoundName:tpl.attackSoundName||''});
+		this._renderDirty=true;
 		return id;
 	},
 	TOUCH_RANGE:0.6,
@@ -2910,8 +3151,25 @@ BLACK.GUI={
 	DAMAGE_ENTITY(id,amount){
 		const e=this.liveEntities.find(e=>e.id===id && e.alive!==false);
 		if(!e) return;
-		e.hp-=amount;
-		if(e.hp<=0){e.hp=0;e.alive=false;}
+		e.hp-=Number(amount)||0;
+		if(e.hp<=0){e.hp=0;e.alive=false;e.state='DEAD';e.stateSince=Date.now();return;}
+		e.state='HURT';e.stateSince=Date.now();
+	},
+	_SET_ENTITY_STATE(e,state,now){
+		if(!e||e.state===state) return;
+		e.state=state;e.stateSince=now;
+	},
+	_ENTITY_AI_STATE(e,tpl,distSq,now){
+		if(!e||e.alive===false){if(e) this._SET_ENTITY_STATE(e,'DEAD',now);return 'DEAD';}
+		const ai=e._ai||(tpl&&tpl.ai)||'STATIC';
+		if(ai!=='STATE' && ai!=='CHASE'){this._SET_ENTITY_STATE(e,'IDLE',now);return 'IDLE';}
+		if(e.state==='HURT' && now-e.stateSince<180) return 'HURT';
+		if(e.hp<=0){this._SET_ENTITY_STATE(e,'DEAD',now);return 'DEAD';}
+		const contactSq=e._aiContactSq!=null?e._aiContactSq:(this.CONTACT_RANGE*this.CONTACT_RANGE);
+		const rangeSq=e._aiRangeSq!=null?e._aiRangeSq:36;
+		if(distSq<=contactSq){this._SET_ENTITY_STATE(e,'ATTACK',now);return 'ATTACK';}
+		if(distSq<=rangeSq){this._SET_ENTITY_STATE(e,'CHASE',now);return 'CHASE';}
+		this._SET_ENTITY_STATE(e,'IDLE',now);return 'IDLE';
 	},
 	DAMAGE_PLAYER(amount){
 		if(this.playerDead) return;
@@ -2958,15 +3216,13 @@ BLACK.GUI={
 		el.textContent='HP: '+this.player.hp+'/'+this.player.maxHp;
 		el.style.display='block';
 	},
-	isEntityBlocking(x,y){
-		// v66: was Math.hypot(...)<CONTACT_RANGE, i.e. one sqrt per live entity per call (and this
-		// is called twice per frame from UPDATE(), once per movement axis). A pure threshold test
-		// doesn't need the actual distance, only whether it's inside the radius, so squaring the
-		// threshold once and comparing squared distance drops the sqrt entirely with an identical
-		// result (sqrt is monotonic, so d<r  <=>  d^2<r^2 for d,r>=0).
+	isEntityBlocking(x,y,excludeId){
 		const r2=this.CONTACT_RANGE*this.CONTACT_RANGE;
-		for(const e of this.liveEntities){
+		const list=this.liveEntities;
+		for(let i=0,n=list.length;i<n;i++){
+			const e=list[i];
 			if(e.alive===false) continue;
+			if(excludeId!=null&&e.id===excludeId) continue;
 			const dx=x-e.x, dy=y-e.y;
 			if(dx*dx+dy*dy<r2) return true;
 		}
@@ -3000,51 +3256,58 @@ BLACK.GUI={
 	},
 	_updateEntities(){
 		if(this.playerDead) return;
-		const p=this.player, now=Date.now();
-		const r2=this.CONTACT_RANGE*this.CONTACT_RANGE;
-		for(const e of this.liveEntities){
-			if(e.alive===false) continue;
-			const tpl=BLACK.GAME.ENTITIES[e.entityIdx];
-			if(!tpl) continue;
-			// v66: distSq feeds both the inContact threshold test and the CHASE gate below without
-			// a sqrt; the actual distance (needed only to normalize the CHASE step vector) is now
-			// computed with Math.sqrt(distSq) just once, and only for entities that are both
-			// ai==='CHASE' and not already inContact -- STATIC entities and any entity already in
-			// contact never pay for a sqrt here at all.
-			const ex=p.x-e.x, ey=p.y-e.y;
-			const distSq=ex*ex+ey*ey;
-			const inContact=distSq<=r2;
-			if(tpl.kind==='ENEMY' && inContact){
-				const interval=1000/Math.max(0.25,tpl.speed||1);
+		const p=this.player, now=this._frameNow||(this._frameNow=performance.now());
+		const list=this.liveEntities;
+		const map=BLACK.GRAPHIC.MAP;
+		for(let i=0,n=list.length;i<n;i++){
+			const e=list[i];
+			if(e.alive===false){e.state='DEAD';continue;}
+			const ex=p.x-e.x,ey=p.y-e.y,distSq=ex*ex+ey*ey;
+			const state=this._ENTITY_AI_STATE(e,null,distSq,now);
+			if(state==='ATTACK'){
+				const interval=e._attackCd||1000;
 				if(now-e._lastAttackAt>=interval){
 					e._lastAttackAt=now;
-					this.DAMAGE_PLAYER(tpl.attack||0);
-					if(tpl.attackSoundName) BLACK.SOUND.PLAY_NAMED_WAVE(tpl.attackSoundName);
+					if(e._kind==='ENEMY'){
+						this.DAMAGE_PLAYER(e._attack||0);
+						if(e._attackSoundName) BLACK.SOUND.PLAY_NAMED_WAVE(e._attackSoundName);
+					}
 				}
+				continue;
 			}
-			if(tpl.ai==='CHASE' && distSq>0.00000001 && !inContact){
+			if(state==='CHASE' && distSq>0.00000001){
 				const dist=Math.sqrt(distSq);
-				const step=(tpl.speed||1)*this.ENEMY_MOVE_SCALE;
-				const dx=ex/dist, dy=ey/dist;
-				const nx=e.x+dx*step, ny=e.y+dy*step;
-				if(!BLACK.GRAPHIC.MAP.isWall(nx,e.y)) e.x=nx;
-				if(!BLACK.GRAPHIC.MAP.isWall(e.x,ny)) e.y=ny;
+				const step=e._step!=null?e._step:((e._speed||1)*this.ENEMY_MOVE_SCALE);
+				const inv=step/dist;
+				const nx=e.x+ex*inv,ny=e.y+ey*inv;
+				if(!map.isWall(nx,e.y) && !this.isEntityBlocking(nx,e.y,e.id)) e.x=nx;
+				if(!map.isWall(e.x,ny) && !this.isEntityBlocking(e.x,ny,e.id)) e.y=ny;
 			}
 		}
 	},
+
 	_killWait:null,
+	_killWaitSlot:{id:0,resolve:null,active:0},
 	WAIT_KILL(id){
 		this._cancelKillWait();
-		return new Promise((resolve)=>{this._killWait={id,resolve};});
+		const k=this._killWaitSlot;
+		k.id=id;
+		return new Promise((resolve)=>{
+			k.resolve=resolve;k.active=1;this._killWait=k;
+		});
 	},
 	_cancelKillWait(){
-		if(this._killWait){const r=this._killWait.resolve;this._killWait=null;r(0);}
+		const k=this._killWait;
+		if(k&&k.active){const r=k.resolve;k.active=0;k.resolve=null;this._killWait=null;if(r) r(0);}
 	},
 	_checkKillWait(){
-		if(!this._killWait) return;
-		if(this.playerDead){const r=this._killWait.resolve;this._killWait=null;r(2);return;}
-		const e=this.liveEntities.find(x=>x.id===this._killWait.id);
-		if(!e||e.alive===false){const r=this._killWait.resolve;this._killWait=null;r(1);}
+		const k=this._killWait;
+		if(!k||!k.active) return;
+		if(this.playerDead){const r=k.resolve;k.active=0;k.resolve=null;this._killWait=null;if(r) r(2);return;}
+		const list=this.liveEntities,kid=k.id;
+		let e=null;
+		for(let i=0,n=list.length;i<n;i++){if(list[i].id===kid){e=list[i];break;}}
+		if(!e||e.alive===false){const r=k.resolve;k.active=0;k.resolve=null;this._killWait=null;if(r) r(1);}
 	},
 	GET_HP(id){
 		const e=this.liveEntities.find(e=>e.id===id);
@@ -3077,19 +3340,32 @@ BLACK.GUI={
 		// frame to frame) this allocates nothing at all -- only sort() reorders references. This
 		// doesn't touch the actual math from v66 above, just removes the GC churn wrapping it.
 		const scratch=this._entScratch||(this._entScratch=[]);
+		const list=this.liveEntities;
 		let n=0;
-		for(const e of this.liveEntities){
+		for(let ei=0,en=list.length;ei<en;ei++){
+			const e=list[ei];
 			if(e.alive===false||e.spriteIdx<0) continue;
 			const dx=e.x-p.x, dy=e.y-p.y;
 			let slot=scratch[n];
-			if(!slot) slot=scratch[n]={e:null,distSq:0,dx:0,dy:0};
+			if(!slot){slot={e:null,distSq:0,dx:0,dy:0};scratch[n]=slot;}
 			slot.e=e; slot.distSq=dx*dx+dy*dy; slot.dx=dx; slot.dy=dy;
 			n++;
 		}
-		scratch.length=n;
-		scratch.sort((a,b)=>b.distSq-a.distSq);
+		const cmp=this._entSortCmp||(this._entSortCmp=function(a,b){return b.distSq-a.distSq;});
+		if(n>1){
+			if(scratch.length!==n){
+				const view=this._entSortView||(this._entSortView=[]);
+				view.length=n;
+				for(let i=0;i<n;i++) view[i]=scratch[i];
+				view.sort(cmp);
+				for(let i=0;i<n;i++) scratch[i]=view[i];
+			}else{
+				scratch.sort(cmp);
+			}
+		}
 		for(let i=0;i<n;i++){
-			const {e,distSq,dx,dy}=scratch[i];
+			const slot=scratch[i];
+			const e=slot.e,distSq=slot.distSq,dx=slot.dx,dy=slot.dy;
 			if(distSq<0.04) continue; // was dist<0.2 (0.2*0.2=0.04)
 			let ang=Math.atan2(dy,dx)-p.ang;
 			while(ang>Math.PI) ang-=Math.PI*2;
@@ -3143,7 +3419,31 @@ BLACK.GUI={
 	_messageResolve:null,
 	_choiceResolve:null,
 	SETDOORKEY(v){this.doorUnlocked=!!v;},
-	CLEAR(){const c=document.getElementById('screen'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);this.CLEARLOG();},
+	CLEAR(){
+		const c=document.getElementById('screen'),x=c.getContext('2d');
+		x.clearRect(0,0,c.width,c.height);
+		if(BLACK.SOUND&&BLACK.SOUND.SNDSTOPALL) BLACK.SOUND.SNDSTOPALL();
+		this.inputMode=false;
+		this.messageMode=false;
+		this.choiceMode=false;
+		this.choiceOptions=[];
+		this.currentPrompt='';
+		this.inputBuffer='';
+		this.keys={};
+		const field=document.getElementById('guiHiddenInput');
+		if(field) field.value='';
+		const interactBtn=document.getElementById('guiInteractBtn');
+		if(interactBtn){interactBtn.style.display='none';interactBtn.textContent='[E] INTERACT';}
+		this._lastInteractLabel=undefined;
+		const inputResolve=this._inputResolve;this._inputResolve=null;
+		const messageResolve=this._messageResolve;this._messageResolve=null;
+		const choiceResolve=this._choiceResolve;this._choiceResolve=null;
+		this.dialogLines=[];
+		this.RENDER_DIALOG();
+		if(inputResolve) inputResolve('');
+		if(messageResolve) messageResolve();
+		if(choiceResolve) choiceResolve(0);
+	},
 	MAX_DIALOG_LINES:8,
 	LOG(text){
 		String(text).split('\n').forEach(line=>this.dialogLines.push(line));
@@ -3317,6 +3617,7 @@ BLACK.GUI={
 		this.player.x=x;
 		this.player.y=y;
 		if(ang!=null) this.player.ang=ang;
+		this._renderDirty=true;
 	},
 	PLAY_MOVIE(listIdx){
 		this.STOP_MOVIE();
@@ -3343,21 +3644,32 @@ BLACK.GUI={
 		if(this.movie.resolve){const r=this.movie.resolve;this.movie.resolve=null;r();}
 	},
 	_zoneWait:null,
+	_zoneWaitSlot:{x1:0,y1:0,r1:0,r1sq:0,x2:0,y2:0,r2:0,r2sq:0,has2:0,resolve:null,active:0},
 	WAIT_ZONE(x1,y1,r1,x2,y2,r2){
 		this._cancelZoneWait();
+		const z=this._zoneWaitSlot;
+		z.x1=Number(x1)||0;z.y1=Number(y1)||0;z.r1=Number(r1)||0;z.r1sq=z.r1*z.r1;
+		z.has2=(x2!=null&&y2!=null&&r2!=null)?1:0;
+		if(z.has2){z.x2=Number(x2)||0;z.y2=Number(y2)||0;z.r2=Number(r2)||0;z.r2sq=z.r2*z.r2;}
+		else{z.x2=0;z.y2=0;z.r2=0;z.r2sq=0;}
 		return new Promise((resolve)=>{
-			this._zoneWait={x1,y1,r1,x2,y2,r2,resolve};
+			z.resolve=resolve;z.active=1;this._zoneWait=z;
 		});
 	},
 	_cancelZoneWait(){
-		if(this._zoneWait){const r=this._zoneWait.resolve;this._zoneWait=null;r(0);}
+		const z=this._zoneWait;
+		if(z&&z.active){const r=z.resolve;z.active=0;z.resolve=null;this._zoneWait=null;if(r) r(0);}
 	},
 	_checkZoneWait(){
-		if(!this._zoneWait) return;
-		const p=this.player, z=this._zoneWait;
-		const d1=Math.hypot(p.x-z.x1,p.y-z.y1), d2=Math.hypot(p.x-z.x2,p.y-z.y2);
-		if(d1<=z.r1){const r=z.resolve;this._zoneWait=null;r(1);}
-		else if(d2<=z.r2){const r=z.resolve;this._zoneWait=null;r(2);}
+		const z=this._zoneWait;
+		if(!z||!z.active) return;
+		const p=this.player;
+		const dx1=p.x-z.x1,dy1=p.y-z.y1;
+		if(dx1*dx1+dy1*dy1<=z.r1sq){const r=z.resolve;z.active=0;z.resolve=null;this._zoneWait=null;if(r) r(1);return;}
+		if(z.has2){
+			const dx2=p.x-z.x2,dy2=p.y-z.y2;
+			if(dx2*dx2+dy2*dy2<=z.r2sq){const r=z.resolve;z.active=0;z.resolve=null;this._zoneWait=null;if(r) r(2);}
+		}
 	},
 	SCENE_ENTER(){
 		this.sceneActive=true;
@@ -3368,8 +3680,30 @@ BLACK.GUI={
 		this.sceneActive=false;
 		this.STOP_MOVIE();
 	},
+	_playFootstep(){
+		const now=performance.now();
+		if(now-(this._lastFootstepAt||0)<280) return;
+		this._lastFootstepAt=now;
+		const S=BLACK.SOUND;
+		if(!S||!S.ENGINE) return;
+		try{
+			S.ENGINE.unlock();
+			// Prefer loaded bank STEP wave; else a short soft noise burst.
+			for(const bankName of ['scenario','openworld']){
+				const bank=S.BANKS[bankName];
+				if(bank&&bank.waveNames&&bank.waveNames.STEP!=null){
+					S.SNDPLAYWAVE(bankName,'STEP');
+					return;
+				}
+			}
+			const w={osc1:'noise',use2:false,osc2:'square',combine:'add',filter:'low',cutoff:700,q:2,a:1,d:30,s:0,r:20};
+			S.ENGINE.PLAY(w,120,0.05);
+		}catch(e){}
+	},
 	START(){
 		this.active=true;
+		this._renderDirty=true;
+		this._lastCamX=NaN;
 		this.keys={};
 		this.STOP_MOVIE();
 		this._cancelZoneWait();
@@ -3425,8 +3759,9 @@ BLACK.GUI={
 		// how many wall columns this frame were "close" (tall) walls, so a felt slowdown can be
 		// attributed to a specific cause instead of guessed at. Toggle with the P key; see RENDER()
 		// for where closeCols/perfSamples are counted and _drawPerfHUD() for the on-screen readout.
+		this._frameNow=performance.now();
 		const perfOn=this._perfHUD;
-		const t0=perfOn?performance.now():0;
+		const t0=perfOn?this._frameNow:0;
 		if(perfOn){
 			// v67: wallMs/spikeMs measure the actual rAF-to-rAF wall-clock gap, NOT just the time
 			// spent inside our own UPDATE()+RENDER() (that's frameMs below). A felt "hitch" is a gap
@@ -3434,24 +3769,34 @@ BLACK.GUI={
 			// or just not scheduling our rAF callback promptly -- none of which shows up in
 			// frameMs. If wallMs stays close to frameMs, the stutter really is our own code; if
 			// wallMs spikes while frameMs stays flat, it's happening outside code we control here.
-			const p=this._perf||(this._perf={updateMs:0,renderMs:0,frameMs:0,wallMs:0,spikeMs:0,spikeWindowStart:t0});
+			const p=this._perf||(this._perf={updateMs:0,renderMs:0,frameMs:0,wallMs:0,spikeFrameMs:0,spikeWallMs:0,spikeMs:0,spikeWindowStart:t0});
 			if(this._lastLoopT0!=null){
 				const wall=t0-this._lastLoopT0;
 				p.wallMs=p.wallMs*0.9+wall*0.1;
+				if(wall>p.spikeWallMs) p.spikeWallMs=wall;
 				if(wall>p.spikeMs) p.spikeMs=wall;
 			}
 			this._lastLoopT0=t0;
 		}
 		this.UPDATE();
 		const t1=perfOn?performance.now():0;
-		this.RENDER();
+		const pNow=this.player;
+		const needDraw=this._renderDirty||this._lightDirty||this._camMoved(pNow)||this._anyLiveEntity()||(this.movie&&this.movie.playing);
+		this._lastSkipped=!needDraw;
+		if(needDraw){
+			this.RENDER();
+			this._renderDirty=false;
+			this._storeCam(pNow);
+		}
 		const t2=perfOn?performance.now():0;
 		if(perfOn){
 			const p=this._perf;
+			const fCost=t2-t0;
 			p.updateMs=p.updateMs*0.9+(t1-t0)*0.1;
 			p.renderMs=p.renderMs*0.9+(t2-t1)*0.1;
-			p.frameMs=p.frameMs*0.9+(t2-t0)*0.1;
-			if(t2-p.spikeWindowStart>2000){p.spikeMs=0;p.spikeWindowStart=t2;} // worst gap in the last ~2s
+			p.frameMs=p.frameMs*0.9+fCost*0.1;
+			if(fCost>p.spikeFrameMs) p.spikeFrameMs=fCost;
+			if(t2-p.spikeWindowStart>2000){p.spikeFrameMs=0;p.spikeWallMs=0;p.spikeMs=0;p.spikeWindowStart=t2;}
 			this._drawPerfHUD(p);
 		}
 		// v68: requestAnimationFrame(()=>this.loop()) allocated a brand-new arrow-function closure
@@ -3460,21 +3805,64 @@ BLACK.GUI={
 		this.raf=requestAnimationFrame(this._loopBound||(this._loopBound=()=>this.loop()));
 	},
 	_perfHUD:false,
-	TOGGLE_PERF_HUD(){this._perfHUD=!this._perfHUD;},
+	_renderDirty:true,
+	RENDER_SCALE:2,
+	RENDER_WALL_STEP:3,
+	RENDER_FLOOR_STEP:2,
+	_lastCamX:NaN,_lastCamY:NaN,_lastCamAng:NaN,
+	_lastSkipped:false,
+	markRenderDirty(){this._renderDirty=true;},
+	SET_RENDER_SCALE(n){
+		this.RENDER_SCALE=Math.max(1,Math.min(4,Math.floor(Number(n)||1)));
+		this._renderDirty=true;
+	},
+	SET_RENDER_WALL(n){
+		this.RENDER_WALL_STEP=Math.max(1,Math.min(8,Math.floor(Number(n)||1)));
+		this._renderDirty=true;
+	},
+	SET_RENDER_FLOOR(n){
+		this.RENDER_FLOOR_STEP=Math.max(1,Math.min(8,Math.floor(Number(n)||1)));
+		this._renderDirty=true;
+	},
+	SET_RENDER_QUALITY(q){
+		const n=Math.max(0,Math.min(3,Math.floor(Number(q)||0)));
+		// 0 LOW, 1 MED (default-ish), 2 HIGH, 3 MAX
+		const table=[[3,4,4],[2,3,2],[1,2,1],[1,1,1]];
+		const t=table[n];
+		this.RENDER_SCALE=t[0]; this.RENDER_WALL_STEP=t[1]; this.RENDER_FLOOR_STEP=t[2];
+		this._renderDirty=true;
+	},
+	TOGGLE_PERF_HUD(){this._perfHUD=!this._perfHUD;this._renderDirty=true;},
+	_anyLiveEntity(){
+		const list=this.liveEntities;
+		for(let i=0,n=list.length;i<n;i++){if(list[i].alive!==false) return true;}
+		return false;
+	},
+	_camMoved(p){
+		return p.x!==this._lastCamX||p.y!==this._lastCamY||p.ang!==this._lastCamAng;
+	},
+	_storeCam(p){this._lastCamX=p.x;this._lastCamY=p.y;this._lastCamAng=p.ang;},
 	_drawPerfHUD(p){
 		const x=this._ctx; if(!x) return;
+		const d=(BLACK.GAME&&BLACK.GAME.SCENARIO_DEBUG)||{stage:'-',last:'-',error:''};
+		const q=BLACK.GAME||{};
+		const arr=(v)=>Array.isArray(v)?'OK '+v.length:'INVALID';
 		const lines=[
-			'update: '+p.updateMs.toFixed(2)+'ms   render: '+p.renderMs.toFixed(2)+'ms',
-			'JS frame: '+p.frameMs.toFixed(2)+'ms   wall (rAF gap): '+p.wallMs.toFixed(2)+'ms',
-			'worst gap /2s: '+p.spikeMs.toFixed(2)+'ms  <- big jump here = a real hitch',
-			'liveEntities: '+this.liveEntities.length,
-			'sprites: '+BLACK.GRAPHIC.SPRITES.length,
-			'closeWallCols(>90%H): '+(this._closeWallCols||0)+' / '+(this._lastW||0)
+			'PERF update '+p.updateMs.toFixed(2)+'ms render '+p.renderMs.toFixed(2)+'ms',
+			'FRAME '+p.frameMs.toFixed(2)+'ms WALL '+p.wallMs.toFixed(2)+'ms WORST F '+(p.spikeFrameMs||0).toFixed(2)+' W '+(p.spikeWallMs||0).toFixed(2),
+			'LIVE '+this.liveEntities.length+' SCALE '+(this.RENDER_SCALE||1)+'x '+(this._lastSkipped?'SKIP':'DRAW')+' WALLCOL '+(this._closeWallCols||0)+'/'+(this._lastW||0),
+			'SCENARIO stage: '+String(d.stage||'-'),
+			'SCENARIO last : '+String(d.last||'-'),
+			'SCENARIO error: '+String(d.error||'NONE'),
+			'ARRAY QUESTS '+arr(q.QUESTS)+' AREAS '+arr(q.AREAS),
+			'ARRAY STRUCT '+arr(q.STRUCTURES)+' SPAWN '+arr(q.SPAWNERS),
+			'ARRAY ENTITY '+arr(q.ENTITIES)+' ITEMS '+arr(q.ITEMS),
+			'SET '+String(q.SCENARIO_SET_ID||'-')+' SEED '+String((BLACK.WORLD&&BLACK.WORLD.MAP&&BLACK.WORLD.MAP.SEED)||'-')
 		];
 		x.save();
 		x.font='12px monospace';
 		x.textBaseline='top';
-		const w=280,h=14*lines.length+8;
+		const w=500,h=14*lines.length+8;
 		x.fillStyle='rgba(0,0,0,0.6)'; x.fillRect(4,4,w,h);
 		x.fillStyle='#0f0';
 		lines.forEach((l,i)=>x.fillText(l,8,8+i*14));
@@ -3496,8 +3884,12 @@ BLACK.GUI={
 		// gives via CONTACT_RANGE, just applied to walls instead of entities). isEntityBlocking
 		// itself still checks the true destination since CONTACT_RANGE already covers that case.
 		const pr=this.PLAYER_RADIUS;
+		const ox=p.x,oy=p.y,oa=p.ang;
 		if(!map.isWall(p.x+mx+Math.sign(mx)*pr,p.y)&&!this.isEntityBlocking(p.x+mx,p.y)) p.x+=mx;
 		if(!map.isWall(p.x,p.y+my+Math.sign(my)*pr)&&!this.isEntityBlocking(p.x,p.y+my)) p.y+=my;
+		if(p.x!==ox||p.y!==oy||p.ang!==oa) this._renderDirty=true;
+		// Footstep SE while walking (cooldown so it is not a machine-gun of clicks).
+		if((p.x!==ox||p.y!==oy) && (mx||my)) this._playFootstep();
 		this.nearDoor=this.findNearbyDoor();
 		this.updateInteractUI();
 		this._updateEntities();
@@ -3573,6 +3965,7 @@ BLACK.GUI={
 	ensureBuffer(W,H){
 		if(!this.buf||this.buf.length!==W*H*4){
 			this.buf=new Uint8ClampedArray(W*H*4);
+			this.buf32=new Uint32Array(this.buf.buffer);
 			this.imgData=new ImageData(this.buf,W,H);
 			this.depthBuf=new Float64Array(W);
 			// v65: these used to be allocated fresh with `new Float64Array(W)`/`new Array(W)`
@@ -3592,6 +3985,8 @@ BLACK.GUI={
 			this._colPerp=new Float64Array(W);
 			this._colHitIdx=new Int32Array(W);
 			this._colWallX=new Float64Array(W);
+			this._colMapX=new Int32Array(W);
+			this._colMapY=new Int32Array(W);
 			this._raySampled=new Uint8Array(W);
 			this._renderCache={W:-1,FOV:-1,ang:null,relAng:null,colCos:null};
 		}
@@ -3646,16 +4041,23 @@ BLACK.GUI={
 		let wallX = side===0 ? p.y+perp*rdy : p.x+perp*rdx;
 		wallX-=Math.floor(wallX);
 		this._colPerp[col]=perp; this._colHitIdx[col]=hitIdx; this._colWallX[col]=wallX; this._raySampled[col]=1;
+		this._colMapX[col]=mapX; this._colMapY[col]=mapY;
 	},
 	RENDER(){
-		const c=this._getScreen(), x=this._ctx, W=c.width, H=c.height;
+		const c=this._getScreen(), x=this._ctx, fullW=c.width, fullH=c.height;
+		const scale=Math.max(1,this.RENDER_SCALE|0||1);
+		const W=scale>1?Math.max(80,(fullW/scale)|0):fullW;
+		const H=scale>1?Math.max(50,(fullH/scale)|0):fullH;
 		const buf=this.ensureBuffer(W,H);
+		const buf32=this.buf32||(this.buf32=new Uint32Array(buf.buffer));
 		if(this.movie.playing){
 			this.RENDER_MOVIE_FRAME(buf,W,H);
-			x.putImageData(this.imgData,0,0);
+			this._blitFrame(x,W,H,fullW,fullH,scale);
 			return;
 		}
 		const map=BLACK.GRAPHIC.MAP,wmap=BLACK.WORLD.MAP,sprites=BLACK.GRAPHIC.SPRITES,p=this.player;
+		if(this._lightDirty) this._buildLightMap();
+		const lightMap=this._lightMap, lightSize=this._lightMapSize, fogMin=this.fogMinBrightness, fogRangeTiles=this.fogRangeTiles;
 		const ceilRGB=BLACK.GRAPHIC.avgRGB(map.ceilIdx)||[34,34,34];
 		const floorRGB=BLACK.GRAPHIC.avgRGB(map.floorIdx)||[51,51,51];
 		const halfH=H/2;
@@ -3711,39 +4113,116 @@ BLACK.GUI={
 		// drawn by the loop below.
 		const ceilRGBCache = ceilSpr ? BLACK.GRAPHIC.ensureSpriteRGB(ceilSpr) : null;
 		const floorRGBCache = floorSpr ? BLACK.GRAPHIC.ensureSpriteRGB(floorSpr) : null;
+		// v80: floor/ceiling cost scales with distance. Near rows: denser samples. Far rows:
+		// larger col step, optional row skip (copy prior row), and past ~fog range: flat fill
+		// (texture detail is invisible under fog anyway). Uint32 pack for pixel writes.
+		const packRGBA=(r,g,b)=>((255<<24)|((b|0)<<16)|((g|0)<<8)|(r|0))>>>0;
+				const fogFlatDist=fogRangeTiles*0.92;
+		const mapSize=map.SIZE|0;
+		const floorLayer=map.FLOOR_DATA, ceilLayer=map.CEIL_DATA;
+		const hasFloorLayer=floorLayer&&floorLayer.length===mapSize*mapSize;
+		const hasCeilLayer=ceilLayer&&ceilLayer.length===mapSize*mapSize;
+		// Resolve a cell's floor/ceil average RGB without sampling texels (cached avgRGB).
+		// Mid/far LOD keeps clay vs grass vs glass distinct even when detail is dropped.
+		const cellAvgRGB=(isCeil,lx,ly,fallback,globalIdx)=>{
+			let tileIdx=globalIdx;
+			if(isCeil){
+				if(hasCeilLayer&&lx>=0&&ly>=0&&lx<mapSize&&ly<mapSize){
+					const cell=ceilLayer[ly*mapSize+lx];
+					if(cell!=null&&cell>=0) tileIdx=cell;
+				}
+			}else if(hasFloorLayer&&lx>=0&&ly>=0&&lx<mapSize&&ly<mapSize){
+				const cell=floorLayer[ly*mapSize+lx];
+				if(cell!=null&&cell>=0) tileIdx=cell;
+			}
+			if(tileIdx!=null&&tileIdx>=0){
+				const lod=BLACK.GRAPHIC.lodRGB(tileIdx,0);
+				if(lod) return lod;
+			}
+			return fallback;
+		};
 		for(let row=0; row<H; row++){
 			const isCeil=row<halfH;
 			const pAbs=Math.max(Math.abs(row-halfH),0.5);
-			let off=row*W*4;
+			const pi=row*W;
+			const fallback=isCeil?ceilRGB:floorRGB;
+			const globalIdx=isCeil?map.ceilIdx:map.floorIdx;
 			if(pAbs<pThreshold){
-				const rgb=isCeil?ceilRGB:floorRGB;
-				for(let col=0; col<W; col++){
-					buf[off]=rgb[0]; buf[off+1]=rgb[1]; buf[off+2]=rgb[2]; buf[off+3]=255;
-					off+=4;
+				// Horizon band: still tint by cell type at coarse step (not one global color).
+				const rowDistance=halfH/Math.max(pAbs,0.5);
+				const colStepH=8;
+				for(let col=0; col<W; col+=colStepH){
+					const invCos=rowDistance/colCos[col];
+					const wx=p.x+invCos*rayDirX[col], wy=p.y+invCos*rayDirY[col];
+					const rgb=cellAvgRGB(isCeil,wx|0,wy|0,fallback,globalIdx);
+					const pix=packRGBA(rgb[0]*fogMin,rgb[1]*fogMin,rgb[2]*fogMin);
+					const last=col+colStepH<W?col+colStepH:W;
+					for(let c=col; c<last; c++) buf32[pi+c]=pix;
 				}
 				continue;
 			}
 			const rowDistance=halfH/pAbs;
-			const spr=isCeil?ceilSpr:floorSpr;
-			const rgbCache=isCeil?ceilRGBCache:floorRGBCache;
-			const fallback=isCeil?ceilRGB:floorRGB;
-			for(let col=0; col<W; col++){
-				let rgb=fallback;
-				if(spr){
-					const wx=p.x+(rowDistance/colCos[col])*rayDirX[col], wy=p.y+(rowDistance/colCos[col])*rayDirY[col];
-					const tx=wx-Math.floor(wx), ty=wy-Math.floor(wy);
-					const texX=Math.min(spr.size-1,Math.floor(tx*spr.size));
-					const texY=Math.min(spr.size-1,Math.floor(ty*spr.size));
-					rgb=rgbCache[texY*spr.size+texX]||fallback;
+			const rowBrightness=Math.max(fogMin,1-rowDistance/fogRangeTiles);
+			// Far: solid per-cell average (no texel). Clay/grass/glass still differ.
+			const farSolid=rowDistance>=fogFlatDist||rowBrightness<=fogMin+0.03||rowDistance>=10;
+			// Mid/far rows: skip alternate scanlines; copy the previous computed row.
+			if(!farSolid&&rowDistance>5&&row>0&&(row&1)){
+				const prev=pi-W;
+				for(let col=0; col<W; col++) buf32[pi+col]=buf32[prev+col];
+				continue;
+			}
+			const baseStep=rowDistance<3?1:rowDistance<8?2:4;
+			const floorMul=Math.max(1,this.RENDER_FLOOR_STEP|0||1);
+			const colStep=Math.min(8,farSolid?Math.max(4,baseStep*floorMul):baseStep*floorMul);
+			const useLight=!farSolid&&!!lightMap&&rowDistance<fogRangeTiles*0.7;
+			const useTexel=!farSolid&&rowDistance<8;
+			for(let col=0; col<W; col+=colStep){
+				const invCos=rowDistance/colCos[col];
+				const wx=p.x+invCos*rayDirX[col], wy=p.y+invCos*rayDirY[col];
+				const lx=wx|0, ly=wy|0;
+				let tileIdx=globalIdx;
+				if(isCeil){
+					if(hasCeilLayer&&lx>=0&&ly>=0&&lx<mapSize&&ly<mapSize){
+						const cell=ceilLayer[ly*mapSize+lx];
+						if(cell!=null&&cell>=0) tileIdx=cell;
+					}
+				}else if(hasFloorLayer&&lx>=0&&ly>=0&&lx<mapSize&&ly<mapSize){
+					const cell=floorLayer[ly*mapSize+lx];
+					if(cell!=null&&cell>=0) tileIdx=cell;
 				}
-				buf[off]=rgb[0]; buf[off+1]=rgb[1]; buf[off+2]=rgb[2]; buf[off+3]=255;
-				off+=4;
+				let rgb=fallback;
+				if(tileIdx!=null&&tileIdx>=0){
+					if(useTexel){
+						const spr=sprites[tileIdx];
+						if(spr){
+							const rgbCache=BLACK.GRAPHIC.ensureSpriteRGB(spr);
+							const ss=spr.size;
+							const tx=wx-Math.floor(wx), ty=wy-Math.floor(wy);
+							const texX=Math.min(ss-1,tx*ss|0);
+							const texY=Math.min(ss-1,ty*ss|0);
+							rgb=rgbCache[texY*ss+texX]||BLACK.GRAPHIC.lodRGB(tileIdx,1)||fallback;
+						}
+					}else{
+						// Far/mid solid: palette-ordered LOD slot (0=far, 1=mid).
+						const band=rowDistance>=10?0:1;
+						rgb=BLACK.GRAPHIC.lodRGB(tileIdx,band)||fallback;
+					}
+				}
+				let lightBonus=0;
+				if(useLight){
+					if(lx>=0&&ly>=0&&lx<lightSize&&ly<lightSize) lightBonus=lightMap[ly*lightSize+lx];
+				}
+				const lit=rowBrightness+lightBonus;
+				const litC=lit>1?1:lit;
+				const pix=packRGBA(rgb[0]*litC,rgb[1]*litC,rgb[2]*litC);
+				const last=col+colStep<W?col+colStep:W;
+				for(let c=col; c<last; c++) buf32[pi+c]=pix;
 			}
 		}
-		// v62: wall DDA march is only actually run every RAY_STEP columns (see header comment);
+// v62: wall DDA march is only actually run every RAY_STEP columns (see header comment);
 		// the columns in between are filled in from the two bracketing real casts instead of
 		// marching themselves -- COPY for near/mid range, INTERPOLATE for far range.
-		const RAY_STEP=2, FAR_DIST=maxSteps*0.5;
+		const RAY_STEP=Math.max(1,this.RENDER_WALL_STEP|0||1), FAR_DIST=maxSteps*0.5;
 		// v68: castRay used to be an arrow-function closure recreated every RENDER() call, and
 		// every one of its calls (W/RAY_STEP+1 of them per frame) returned a brand-new
 		// {perp,side,hitIdx,wallX} object -- the interpolation branch below allocated yet another
@@ -3758,9 +4237,10 @@ BLACK.GUI={
 		let closeWallCols=0; // PERF DEBUG: see loop()/_drawPerfHUD() -- counts columns with a near/tall wall this frame
 		this._lastW=W;
 		for(let col=0; col<W; col++){
-			let perp,hitIdx,wallX;
+			let perp,hitIdx,wallX,mapX,mapY;
 			if(raySampled[col]){
 				perp=colPerp[col]; hitIdx=colHitIdx[col]; wallX=colWallX[col];
+				mapX=this._colMapX[col]; mapY=this._colMapY[col];
 			} else {
 				let prevCol=col; while(!raySampled[prevCol]) prevCol--;
 				let nextCol=col; while(!raySampled[nextCol]) nextCol++;
@@ -3771,18 +4251,26 @@ BLACK.GUI={
 					perp=useNext?nextPerp:prevPerp;
 					hitIdx=useNext?colHitIdx[nextCol]:colHitIdx[prevCol];
 					wallX=useNext?colWallX[nextCol]:colWallX[prevCol];
+					mapX=useNext?this._colMapX[nextCol]:this._colMapX[prevCol];
+					mapY=useNext?this._colMapY[nextCol]:this._colMapY[prevCol];
 				} else {
 					// far range: linearly interpolate depth and texture-U between the two real casts.
 					const t=(col-prevCol)/(nextCol-prevCol);
 					perp=prevPerp+(nextPerp-prevPerp)*t;
 					hitIdx=colHitIdx[prevCol];
 					wallX=colWallX[prevCol]+(colWallX[nextCol]-colWallX[prevCol])*t;
+					mapX=this._colMapX[prevCol]; mapY=this._colMapY[prevCol];
 				}
 			}
 			this.depthBuf[col]=perp;
 			const lineH=Math.floor(H/perp);
 			if(lineH>=H*0.9) closeWallCols++; // PERF DEBUG: this column is filling nearly the whole screen height
 			const ds=Math.max(0,Math.floor(-lineH/2+H/2)), de=Math.min(H-1,Math.floor(lineH/2+H/2));
+			// same brightness model as the floor/ceiling pass above: distance fog from perp (already
+			// computed for this column) plus a torch-glow bonus looked up at the hit tile.
+			let lightBonus=0;
+			if(lightMap&&mapX>=0&&mapY>=0&&mapX<lightSize&&mapY<lightSize) lightBonus=lightMap[mapY*lightSize+mapX];
+			const brightness=Math.min(1,Math.max(fogMin,1-perp/fogRangeTiles)+lightBonus);
 			const spr = hitIdx>=0 ? sprites[hitIdx] : null;
 			if(spr){
 				// v65: decode this column's wall sprite once (cache-hit after the first time),
@@ -3790,22 +4278,38 @@ BLACK.GUI={
 				const rgbCache=BLACK.GRAPHIC.ensureSpriteRGB(spr);
 				const texX=Math.min(spr.size-1,Math.floor(wallX*spr.size));
 				const rowSpan=(de-ds)||1;
+				const br=brightness>1?1:brightness;
+				const ss=spr.size;
 				for(let row=ds; row<=de; row++){
-					const texY=Math.min(spr.size-1,Math.floor((row-ds)/rowSpan*spr.size));
-					const rgb=rgbCache[texY*spr.size+texX]||[85,85,85];
-					const off=(row*W+col)*4;
-					buf[off]=rgb[0]; buf[off+1]=rgb[1]; buf[off+2]=rgb[2]; buf[off+3]=255;
+					const texY=Math.min(ss-1,((row-ds)/rowSpan*ss)|0);
+					const rgb=rgbCache[texY*ss+texX]||this._flatRGB;
+					buf32[row*W+col]=((255<<24)|(((rgb[2]*br)|0)<<16)|(((rgb[1]*br)|0)<<8)|((rgb[0]*br)|0))>>>0;
 				}
 			} else {
-				for(let row=ds; row<=de; row++){
-					const off=(row*W+col)*4;
-					buf[off]=85; buf[off+1]=85; buf[off+2]=85; buf[off+3]=255;
-				}
+				const g=(85*brightness)|0;
+				const gpix=((255<<24)|(g<<16)|(g<<8)|g)>>>0;
+				for(let row=ds; row<=de; row++) buf32[row*W+col]=gpix;
 			}
 		}
 		this._closeWallCols=closeWallCols; // PERF DEBUG: read by _drawPerfHUD()
 		this.RENDER_ENTITIES(buf,W,H,p);
-		x.putImageData(this.imgData,0,0);
+		this._blitFrame(x,W,H,fullW,fullH,scale);
+	},
+	_blitFrame(x,W,H,fullW,fullH,scale){
+		if(scale<=1){
+			x.putImageData(this.imgData,0,0);
+			return;
+		}
+		let bc=this._blitCanvas, bx=this._blitCtx;
+		if(!bc){
+			bc=document.createElement('canvas');
+			bx=bc.getContext('2d');
+			this._blitCanvas=bc; this._blitCtx=bx;
+		}
+		if(bc.width!==W||bc.height!==H){bc.width=W;bc.height=H;}
+		bx.putImageData(this.imgData,0,0);
+		x.imageSmoothingEnabled=false;
+		x.drawImage(bc,0,0,fullW,fullH);
 	}
 };
 </script>
@@ -3861,6 +4365,27 @@ BLACK.GRAPHIC={
 		this.renderPalette();
 		this.PREVIEW();
 	},
+	// Ensure a hex is in PALETTE (for procedural tiles so mid/far LOD can key off palette order).
+	ensurePaletteColor(hex){
+		if(!hex) return hex;
+		const h=String(hex).toLowerCase();
+		for(let i=1;i<this.PALETTE.length;i++){
+			if(String(this.PALETTE[i]).toLowerCase()===h) return this.PALETTE[i];
+		}
+		this.PALETTE.push(hex);
+		this.invalidateAllLodColors();
+		return hex;
+	},
+	// Seed open-world / biome LOD order: darker first, then mid, then bright accents.
+	seedOpenWorldPalette(){
+		const cols=[
+			'#2f5522','#3d6b2e','#4a7a38','#5a8c42', // grass dark→bright
+			'#8a5a32','#a06a3e','#b07a4a','#c08a58', // clay
+			'#88b8c8','#a8d8e8','#b8e0f0',           // glass
+			'#4e3a22','#5a4126','#6b4e2e','#7a5a38'  // dirt
+		];
+		for(let i=0;i<cols.length;i++) this.ensurePaletteColor(cols[i]);
+	},
 	renderInto(hostId){
 		const host=document.getElementById(hostId);
 		if(!host) return;
@@ -3905,17 +4430,20 @@ BLACK.GRAPHIC={
 	ADD(){
 		this.PALETTE.push(this.composeColor());
 		this.curColor=this.PALETTE.length-1;
+		this.invalidateAllLodColors();
 		this.renderPalette();
 	},
 	EDIT(){
 		if(this.curColor<=0) return;
 		this.PALETTE[this.curColor]=this.composeColor();
+		this.invalidateAllLodColors();
 		this.renderPalette();
 	},
 	REMOVE(){
 		if(this.curColor<=0) return;
 		this.PALETTE.splice(this.curColor,1);
 		this.curColor=0;
+		this.invalidateAllLodColors();
 		this.renderPalette();
 		this.PREVIEW();
 	},
@@ -4036,6 +4564,73 @@ BLACK.GRAPHIC={
 		spr._rgbCache=null;
 		spr._avgColor=undefined;
 		spr._avgRGB=undefined;
+		spr._lodColors=undefined;
+	},
+	invalidateAllLodColors(){
+		// Palette order drives mid/far solid colors — any palette edit must rebuild every sprite.
+		const arr=this.SPRITES;
+		for(let i=0;i<arr.length;i++){
+			const s=arr[i];
+			if(s) s._lodColors=undefined;
+		}
+	},
+	// Mid/far LOD colors from GLOBAL palette order (not pixel average).
+	// Rule: among colors that appear in the sprite, take those that match PALETTE entries,
+	// sorted by ascending palette index. Slot 0 = farthest solid, 1 = mid, 2 = nearer solid.
+	// Transparent palette[0] is ignored. If no palette color appears in the sprite, fall back
+	// to avgRGB once so procedural tiles still get a single solid.
+	ensureSpriteLodColors(spr){
+		if(!spr) return null;
+		if(spr._lodColors!==undefined) return spr._lodColors;
+		const pal=this.PALETTE||[];
+		const hexToPi=new Map();
+		for(let pi=1;pi<pal.length;pi++){
+			const h=pal[pi];
+			if(h) hexToPi.set(String(h).toLowerCase(),pi);
+		}
+		const used=new Set();
+		const pixels=spr.pixels||[];
+		for(let i=0;i<pixels.length;i++){
+			const hex=pixels[i];
+			if(!hex) continue;
+			const pi=hexToPi.get(String(hex).toLowerCase());
+			if(pi!=null) used.add(pi);
+		}
+		const ordered=[...used].sort((a,b)=>a-b);
+		const out=[];
+		for(let k=0;k<ordered.length&&k<3;k++){
+			const hex=pal[ordered[k]];
+			const rgb=hex?BLACK.GUI.hexToRGB(hex):null;
+			if(rgb) out.push(rgb);
+		}
+		if(!out.length){
+			// No palette hit: single fallback from average (still one solid for far LOD).
+			const hex=this.avgColor(this.SPRITES.indexOf(spr)>=0?this.SPRITES.indexOf(spr):-1);
+			// avgColor needs index — use scan if needed
+		}
+		if(!out.length){
+			let r=0,g=0,b=0,n=0;
+			for(let i=0;i<pixels.length;i++){
+				const hex=pixels[i];
+				if(!hex) continue;
+				const rgb=BLACK.GUI.hexToRGB(hex);
+				if(!rgb) continue;
+				r+=rgb[0];g+=rgb[1];b+=rgb[2];n++;
+			}
+			if(n) out.push([r/n|0,g/n|0,b/n|0]);
+		}
+		spr._lodColors=out;
+		return out;
+	},
+	lodRGB(idx,band){
+		// band 0 = farthest, 1 = mid, 2 = nearer solid (clamped).
+		if(idx==null||idx<0) return null;
+		const spr=this.SPRITES[idx];
+		if(!spr) return null;
+		const lod=this.ensureSpriteLodColors(spr);
+		if(!lod||!lod.length) return this.avgRGB(idx);
+		const b=Math.max(0,Math.min(lod.length-1,band|0));
+		return lod[b];
 	},
 	avgRGB(idx){
 		// v65: caches the RGB-array form of avgColor()'s hex string, so RENDER() (which wants
@@ -4056,8 +4651,15 @@ BLACK.GRAPHIC={
 BLACK.GRAPHIC.MAP={
 	SIZE:16,
 	DATA:[],
+	FLOOR_DATA:[],
+	CEIL_DATA:[],
 	floorIdx:-1,
 	ceilIdx:-1,
+	ensureLayers(){
+		const n=this.SIZE*this.SIZE;
+		if(!this.FLOOR_DATA||this.FLOOR_DATA.length!==n) this.FLOOR_DATA=new Array(n).fill(-1);
+		if(!this.CEIL_DATA||this.CEIL_DATA.length!==n) this.CEIL_DATA=new Array(n).fill(-1);
+	},
 	INIT(){this.RESIZE(true);},
 	RESIZE(skipConfirm){
 		const sel=document.getElementById('mapSize');
@@ -4070,6 +4672,8 @@ BLACK.GRAPHIC.MAP={
 		}
 		this.SIZE = newSize;
 		this.DATA = new Array(this.SIZE*this.SIZE).fill(-1);
+		this.FLOOR_DATA = new Array(this.SIZE*this.SIZE).fill(-1);
+		this.CEIL_DATA = new Array(this.SIZE*this.SIZE).fill(-1);
 		for(let x=0;x<this.SIZE;x++){this.DATA[x]=0;this.DATA[(this.SIZE-1)*this.SIZE+x]=0;}
 		for(let y=0;y<this.SIZE;y++){this.DATA[y*this.SIZE]=0;this.DATA[y*this.SIZE+this.SIZE-1]=0;}
 		this.REFRESH();
@@ -4101,12 +4705,15 @@ BLACK.GRAPHIC.MAP={
 				const i=y*this.SIZE+x;
 				const v=inf?BLACK.WORLD.MAP.GET(x,y):this.DATA[i];
 				const c=BLACK.GRAPHIC.avgColor(v>=0?v:-1)||'#000';
-				t+='<td onpointerdown="BLACK.GRAPHIC.MAP.PAINT_START('+i+')" onpointerenter="BLACK.GRAPHIC.MAP.PAINT_DRAG('+i+')" style="width:'+cell+'px;height:'+cell+'px;background:'+c+';border:1px solid #444;padding:0"></td>';
+				// v78: id lets SET() patch just this one cell later instead of calling buildTable()
+				// (a full SIZE*SIZE rebuild) on every single map mutation -- see SET()'s note.
+				t+='<td id="mapCell_'+x+'_'+y+'" onpointerdown="BLACK.GRAPHIC.MAP.PAINT_START('+i+')" onpointerenter="BLACK.GRAPHIC.MAP.PAINT_DRAG('+i+')" style="width:'+cell+'px;height:'+cell+'px;background:'+c+';border:1px solid #444;padding:0"></td>';
 			}
 			t+='</tr>';
 		}
 		t+='</table>';
 		host.innerHTML=t;
+		if(BLACK.GUI&&BLACK.GUI.markLightDirty) BLACK.GUI.markLightDirty();
 	},
 	isPainting:false,
 	fillMode:false,
@@ -4127,31 +4734,84 @@ BLACK.GRAPHIC.MAP={
 			for(let j=0;j<this.DATA.length;j++){
 				BLACK.WORLD.MAP.SET(j%this.SIZE,(j/this.SIZE)|0,this.DATA[j]);
 			}
+			this.buildTable(); // bulk change (many cells) -- a full rebuild here is the right call, not per-cell patching
+			if(BLACK.GUI&&BLACK.GUI.markLightDirty) BLACK.GUI.markLightDirty();
 		} else {
 			const x=i%this.SIZE,y=(i/this.SIZE)|0;
-			BLACK.WORLD.MAP.SET(x,y,idx);
-			this.DATA[i]=idx;
+			this.SET(x,y,idx); // v78: single cell -- SET() already does the O(1) DOM patch + dirty-mark, no need to also rebuild the whole table here
 		}
-		this.buildTable();
 	},
 	SETFLOOR(){this.floorIdx=parseInt(document.getElementById('mapFloor').value);},
 	SETCEIL(){this.ceilIdx=parseInt(document.getElementById('mapCeil').value);},
 	isWall(x,y){return BLACK.WORLD.MAP.isWall(x,y);},
+	// v78: SET() previously called the full buildTable() (rebuilding every <td> in the SIZE*SIZE
+	// editor grid as one big innerHTML replacement) on EVERY single map mutation -- including
+	// gameplay ones like a door opening or a cracked wall breaking, even though the map-editor
+	// panel usually isn't even the visible tab at that moment. That was a real, visible per-event
+	// frame spike ("スパイク状に処理が詰まる"). It now patches just the one changed cell's DOM
+	// element directly (O(1)); buildTable() itself is unchanged and still used wherever many cells
+	// change at once (bulk fill, scenario generation, resize/load), where a full rebuild is right.
+	_bulk:0,
+	beginBulk(){this._bulk=(this._bulk|0)+1;},
+	endBulk(){
+		this._bulk=Math.max(0,(this._bulk|0)-1);
+		if(this._bulk===0){
+			this.buildTable();
+			if(BLACK.GUI&&BLACK.GUI.markLightDirty) BLACK.GUI.markLightDirty();
+		}
+	},
 	SET(x,y,idx){
 		BLACK.WORLD.MAP.SET(x,y,idx);
 		const mx=Math.floor(x),my=Math.floor(y);
-		if(mx>=0&&my>=0&&mx<this.SIZE&&my<this.SIZE) this.DATA[my*this.SIZE+mx]=idx;
-		this.buildTable();
+		if(mx>=0&&my>=0&&mx<this.SIZE&&my<this.SIZE){
+			this.DATA[my*this.SIZE+mx]=idx;
+			if(!this._bulk){
+				const cellEl=document.getElementById('mapCell_'+mx+'_'+my);
+				if(cellEl) cellEl.style.background=BLACK.GRAPHIC.avgColor(idx>=0?idx:-1)||'#000';
+			}
+		}
+		if(!this._bulk&&BLACK.GUI&&BLACK.GUI.markLightDirty) BLACK.GUI.markLightDirty();
 	},
 	FLOOR(idx){
 		this.floorIdx=idx;
 		const sel=document.getElementById('mapFloor');
 		if(sel) sel.value=idx;
+		if(BLACK.GUI&&BLACK.GUI.markRenderDirty) BLACK.GUI.markRenderDirty();
 	},
 	CEIL(idx){
 		this.ceilIdx=idx;
 		const sel=document.getElementById('mapCeil');
 		if(sel) sel.value=idx;
+		if(BLACK.GUI&&BLACK.GUI.markRenderDirty) BLACK.GUI.markRenderDirty();
+	},
+	// Per-cell floor/ceiling (-1 = use global FLOOR/CEIL). Enables outdoor/indoor tile mix.
+	SETFLOOR_AT(x,y,idx){
+		this.ensureLayers();
+		const mx=Math.floor(Number(x)),my=Math.floor(Number(y));
+		if(mx>=0&&my>=0&&mx<this.SIZE&&my<this.SIZE) this.FLOOR_DATA[my*this.SIZE+mx]=idx;
+		if(BLACK.GUI&&BLACK.GUI.markRenderDirty) BLACK.GUI.markRenderDirty();
+	},
+	SETCEIL_AT(x,y,idx){
+		this.ensureLayers();
+		const mx=Math.floor(Number(x)),my=Math.floor(Number(y));
+		if(mx>=0&&my>=0&&mx<this.SIZE&&my<this.SIZE) this.CEIL_DATA[my*this.SIZE+mx]=idx;
+		if(BLACK.GUI&&BLACK.GUI.markRenderDirty) BLACK.GUI.markRenderDirty();
+	},
+	FILL_FLOOR(x1,y1,x2,y2,idx){
+		this.ensureLayers();
+		const xa=Math.min(x1,x2)|0,xb=Math.max(x1,x2)|0,ya=Math.min(y1,y2)|0,yb=Math.max(y1,y2)|0;
+		for(let y=ya;y<=yb;y++) for(let x=xa;x<=xb;x++){
+			if(x>=0&&y>=0&&x<this.SIZE&&y<this.SIZE) this.FLOOR_DATA[y*this.SIZE+x]=idx;
+		}
+		if(BLACK.GUI&&BLACK.GUI.markRenderDirty) BLACK.GUI.markRenderDirty();
+	},
+	FILL_CEIL(x1,y1,x2,y2,idx){
+		this.ensureLayers();
+		const xa=Math.min(x1,x2)|0,xb=Math.max(x1,x2)|0,ya=Math.min(y1,y2)|0,yb=Math.max(y1,y2)|0;
+		for(let y=ya;y<=yb;y++) for(let x=xa;x<=xb;x++){
+			if(x>=0&&y>=0&&x<this.SIZE&&y<this.SIZE) this.CEIL_DATA[y*this.SIZE+x]=idx;
+		}
+		if(BLACK.GUI&&BLACK.GUI.markRenderDirty) BLACK.GUI.markRenderDirty();
 	}
 };
 </script>
@@ -4305,11 +4965,12 @@ BLACK.WORLD={
 			const s=seed!=null?Number(seed):(this.SEED|0);
 			this.setSeed(s,true);
 			const data=this.GENERATOR.generate(S,s,algo||this.GENERATOR.ALGO);
-			for(let k=0;k<S*S;k++) map.DATA[k]=data[k];
+			const dst=map.DATA;
+			for(let k=0;k<S*S;k++) dst[k]=data[k];
 			this.MODE='STATIC';
 			this.clearCache();
-			if(map.buildTable) map.buildTable();
-			if(this.syncUI && typeof document!=='undefined') this.syncUI();
+			if(!map._bulk&&map.buildTable) map.buildTable();
+			if(!map._bulk&&this.syncUI && typeof document!=='undefined') this.syncUI();
 			return this.GENERATOR.LAST_META;
 		},
 		getRooms(){return (this.GENERATOR.LAST_ROOMS||[]).slice();},
@@ -4581,7 +5242,57 @@ BLACK.SOUND={
 		this.NOTE.INIT();
 		this.TRACK.INIT();
 		this.MASTER.INIT();
+		this.BANKS={};
+		this.BIND_BANK('editor',{
+			waves:this.WAVE.LIST,
+			notes:this.NOTE.LIST,
+			tracks:this.TRACK.LIST,
+			master:{bpm:this.MASTER.bpm,vol:this.MASTER.vol},
+			waveNames:{},noteNames:{},trackNames:{}
+		},false);
 		this.PAGE('WAVE');
+	},
+	BANKS:{},
+	activeBank:'editor',
+	BIND_BANK(name,bank,refresh=true){
+		if(!bank) return;
+		this.BANKS[name]=bank;
+		this.activeBank=String(name);
+		this.WAVE.LIST=bank.waves&&bank.waves.length?bank.waves:[this.WAVE.DEFAULT()];
+		this.NOTE.LIST=bank.notes&&bank.notes.length?bank.notes:[this.NOTE.DEFAULT(16)];
+		this.TRACK.LIST=bank.tracks&&bank.tracks.length?bank.tracks:[this.TRACK.DEFAULT()];
+		bank.waves=this.WAVE.LIST; bank.notes=this.NOTE.LIST; bank.tracks=this.TRACK.LIST;
+		bank.master=bank.master||{bpm:120,vol:0.8};
+		this.MASTER.bpm=bank.master.bpm!=null?bank.master.bpm:120;
+		this.MASTER.vol=bank.master.vol!=null?bank.master.vol:0.8;
+		this.WAVE.cur=Math.min(Math.max(this.WAVE.cur,0),this.WAVE.LIST.length-1);
+		this.NOTE.cur=Math.min(Math.max(this.NOTE.cur,0),this.NOTE.LIST.length-1);
+		this.TRACK.cur=Math.min(Math.max(this.TRACK.cur,0),this.TRACK.LIST.length-1);
+		if(this.WAVE.cur<0)this.WAVE.cur=0;if(this.NOTE.cur<0)this.NOTE.cur=0;if(this.TRACK.cur<0)this.TRACK.cur=0;
+		this.MASTER.REFRESH();
+		this.REFRESH_BANK_UI();
+		if(refresh)this.PAGE(this.curPage);
+	},
+	LOAD_BANK(name,mml,selectUI=true){
+		const bank=this.MML.PARSE(mml);
+		this.BANKS[name]=bank;
+		if(selectUI)this.BIND_BANK(name,bank,true); else this.REFRESH_BANK_UI();
+		return bank;
+	},
+	REFRESH_BANK_UI(){
+		const sel=document.getElementById('soundBankList');
+		if(sel){
+			const names=Object.keys(this.BANKS);
+			sel.innerHTML='';
+			names.forEach(name=>{const o=document.createElement('option');o.value=name;o.textContent=name;sel.appendChild(o);});
+			sel.value=this.activeBank;
+		}
+		const out=document.getElementById('soundBankName');
+		if(out)out.textContent=this.activeBank;
+	},
+	SELECT_BANK_UI(){
+		const sel=document.getElementById('soundBankList');
+		if(sel&&this.BANKS[sel.value])this.BIND_BANK(sel.value,this.BANKS[sel.value],true);
 	},
 	ENGINE:{
 		ctx:null,
@@ -4592,6 +5303,10 @@ BLACK.SOUND={
 		trackMix:{},
 		getCtx(){
 			this.ctx=this.ctx||new (window.AudioContext||window.webkitAudioContext)();
+			// Browsers start suspended until a user gesture; resume on every access so RUN/PLAY work.
+			if(this.ctx.state==='suspended'){
+				try{this.ctx.resume();}catch(e){}
+			}
 			if(!this.masterGain){
 				this.masterGain=this.ctx.createGain();
 				this.masterGain.gain.value=0.8;
@@ -4602,6 +5317,11 @@ BLACK.SOUND={
 				this.startMeter();
 			}
 			return this.ctx;
+		},
+		unlock(){
+			const ctx=this.getCtx();
+			if(ctx.state==='suspended') return ctx.resume().catch(function(){});
+			return Promise.resolve();
 		},
 		getNoise(){
 			const ctx=this.getCtx();
@@ -4614,14 +5334,18 @@ BLACK.SOUND={
 		},
 		makeSrc(type,freq){
 			const ctx=this.getCtx();
-			if(type==='noise'){
+			let t=String(type||'sine').toLowerCase();
+			if(t==='saw') t='sawtooth';
+			if(t==='tri') t='triangle';
+			if(t!=='sine'&&t!=='square'&&t!=='sawtooth'&&t!=='triangle'&&t!=='noise') t='sine';
+			if(t==='noise'){
 				const s=ctx.createBufferSource();
 				s.buffer=this.getNoise();
 				s.loop=true;
 				return s;
 			}
 			const o=ctx.createOscillator();
-			o.type=type;
+			o.type=t;
 			o.frequency.value=freq;
 			return o;
 		},
@@ -4688,17 +5412,19 @@ BLACK.SOUND={
 			const ctx=this.getCtx();
 			if(!m){
 				const g=ctx.createGain();g.gain.value=vol;
-				const p=ctx.createStereoPanner?ctx.createStereoPanner():null;
 				const an=ctx.createAnalyser();an.fftSize=1024;
-				g.connect(an);an.connect(this.masterGain);
-				if(p){p.pan.value=pan;p.connect(g);}
+				let p=null;
+				try{p=ctx.createStereoPanner?ctx.createStereoPanner():null;}catch(e){p=null;}
+				if(p){g.connect(p);p.connect(an);p.pan.value=pan||0;}
+				else g.connect(an);
+				an.connect(this.masterGain);
 				m={gain:g,panner:p,analyser:an};
 				this.trackMix[idx]=m;
 			} else {
 				m.gain.gain.value=vol;
-				if(m.panner) m.panner.pan.value=pan;
+				if(m.panner) m.panner.pan.value=pan||0;
 			}
-			return m.panner||m.gain;
+			return m.gain;
 		},
 		PLAY(wave,freq,dur,dest){
 			const ctx=this.getCtx();
@@ -5036,7 +5762,7 @@ BLACK.SOUND={
 			const sel=document.getElementById('noteList');
 			if(!sel) return;
 			sel.innerHTML='';
-			this.LIST.forEach((n,i)=>{const o=document.createElement('option');o.value=i;o.textContent='NOTE'+i;sel.appendChild(o);});
+			this.LIST.forEach((n,i)=>{const o=document.createElement('option');o.value=i;o.textContent='NOTE'+i+(n.name?' '+n.name:'');sel.appendChild(o);});
 			sel.value=this.cur;
 			this.FILL();
 		},
@@ -5082,7 +5808,7 @@ BLACK.SOUND={
 				t+='<tr><td class="unit">'+nm+'</td>';
 				for(let oc=0;oc<=8;oc++){
 					const sel=(p && p.note===ni && p.octave===oc);
-					t+='<td onclick="BLACK.SOUND.NOTE.PICK('+ni+','+oc+')" class="unit" style="text-align:center;cursor:pointer;'+(sel?'outline:2px solid #fff':'')+'">'+ (sel?'●':'') +'</td>';
+					t+='<td onclick="BLACK.SOUND.NOTE.PICK('+ni+','+oc+')" class="unit" style="text-align:center;cursor:pointer;'+(sel?'outline:2px solid #fff':'')+'">'+ (sel?'✓':'') +'</td>';
 				}
 				t+='</tr>';
 			});
@@ -5191,7 +5917,7 @@ BLACK.SOUND={
 			if(!sel) return;
 			const keep=sel.value;
 			sel.innerHTML='';
-			BLACK.SOUND.WAVE.LIST.forEach((w,i)=>{const o=document.createElement('option');o.value=i;o.textContent='WAVE'+i;sel.appendChild(o);});
+			BLACK.SOUND.WAVE.LIST.forEach((w,i)=>{const o=document.createElement('option');o.value=i;o.textContent='WAVE'+i+(w.name?' '+w.name:'');sel.appendChild(o);});
 			if(keep!=='') sel.value=keep;
 		},
 		REFRESH_NOTE_OPTIONS(){
@@ -5272,6 +5998,8 @@ BLACK.SOUND={
 			this.bpm=parseInt(document.getElementById('masterBPM').value)||120;
 			this.vol=parseInt(document.getElementById('masterVol').value)/100;
 			eng.masterGain.gain.value=this.vol;
+			const bank=BLACK.SOUND.BANKS[BLACK.SOUND.activeBank];
+			if(bank){bank.master=bank.master||{};bank.master.bpm=this.bpm;bank.master.vol=this.vol;}
 			const o=document.getElementById('masterOut');
 			if(o) o.textContent='BPM:'+this.bpm+' VOL:'+Math.round(this.vol*100)+'%';
 		},
@@ -5323,8 +6051,14 @@ BLACK.SOUND={
 					bank.master.bpm=parseInt(kv.BPM)||120;
 					bank.master.vol=(kv.VOL!==undefined?parseInt(kv.VOL):80)/100;
 				} else if(kind==='WAVE'){
+					const normOsc=(o)=>{
+						let t=String(o||'sine').toLowerCase();
+						if(t==='saw') t='sawtooth';
+						if(t==='tri') t='triangle';
+						return t;
+					};
 					bank.waves[idx]={
-						osc1:(kv.OSC1||'SINE').toLowerCase(),use2:kv.USE2==='1',osc2:(kv.OSC2||'SQUARE').toLowerCase(),
+						osc1:normOsc(kv.OSC1||'SINE'),use2:kv.USE2==='1',osc2:normOsc(kv.OSC2||'SQUARE'),
 						combine:(kv.COMBINE||'ADD').toLowerCase(),filter:(kv.FILTER||'NONE').toLowerCase(),
 						cutoff:parseFloat(kv.CUTOFF)||1000,q:parseFloat(kv.Q)||10,
 						a:parseFloat(kv.A)||10,d:parseFloat(kv.D)||100,s:(kv.S!==undefined?parseFloat(kv.S):70)/100,r:parseFloat(kv.R)||200,
@@ -5352,22 +6086,23 @@ BLACK.SOUND={
 	MML_LOAD(){
 		const t=document.getElementById('mmlText');
 		if(!t) return;
-		if(!confirm('Loading MML replaces all current WAVE/NOTE/TRACK/MASTER content. Continue?')) return;
+		if(!confirm('Loading MML replaces the active SOUND bank. Continue?')) return;
+		const name=this.activeBank||'editor';
 		const bank=this.MML.PARSE(t.value);
-		this.WAVE.LIST=bank.waves.length?bank.waves:[this.WAVE.DEFAULT()];
-		this.WAVE.cur=0;
-		this.NOTE.LIST=bank.notes.length?bank.notes:[this.NOTE.DEFAULT(16)];
-		this.NOTE.cur=0;
-		this.NOTE.curStep=0;
-		this.TRACK.LIST=bank.tracks.length?bank.tracks:[this.TRACK.DEFAULT()];
-		this.TRACK.cur=0;
-		this.MASTER.bpm=bank.master.bpm;
-		this.MASTER.vol=bank.master.vol;
-		this.PAGE(this.curPage);
-		this.MASTER.REFRESH();
+		this.BIND_BANK(name,bank,true);
 	},
-	BANKS:{},
-	SNDLOAD(name,mml){this.BANKS[name]=this.MML.PARSE(mml);},
+	SNDLOAD(name,mml){
+		try{
+			this.ENGINE.getCtx();
+			const bank=this.LOAD_BANK(name,mml,String(name)===String(this.activeBank));
+			if(bank.master&&bank.master.vol!=null&&this.ENGINE.masterGain){
+				this.ENGINE.masterGain.gain.value=Math.max(0,Math.min(1,bank.master.vol));
+			}
+		}catch(e){
+			console.error('SOUND LOAD failed for bank "'+name+'":',e);
+			this.BANKS[name]={waves:[],notes:[],tracks:[],master:{bpm:120,vol:0.8},waveNames:{},noteNames:{},trackNames:{}};
+		}
+	},
 	RESOLVE_NAME(map,key,kind,bankName){
 		if(typeof key!=='string') return key;
 		const upper=key.toUpperCase();
@@ -5377,9 +6112,18 @@ BLACK.SOUND={
 	},
 	SNDPLAYWAVE(name,idx){
 		const bank=this.BANKS[name];if(!bank) return;
-		idx=this.RESOLVE_NAME(bank.waveNames,idx,'WAVE',name);
+		try{idx=this.RESOLVE_NAME(bank.waveNames,idx,'WAVE',name);}catch(e){console.error(e);return;}
 		const w=bank.waves[idx];if(!w) return;
-		this.ENGINE.PLAY(w,440,0.4);
+		const isStep=w.name==='STEP'||(typeof idx==='string'&&String(idx).toUpperCase()==='STEP');
+		const freq=isStep?90+Math.random()*40:440;
+		const dur=isStep?0.06:0.35;
+		// AudioContext.resume() is asynchronous.  Do not create/start the voice
+		// until the context has actually been unlocked; otherwise PLAYWAVE can
+		// be silent on browsers that start AudioContext in "suspended" state.
+		const u=this.ENGINE.unlock?this.ENGINE.unlock():null;
+		const play=()=>{try{this.ENGINE.PLAY(w,freq,dur);}catch(err){console.error('ENGINE.PLAY',err);}};
+		if(u&&typeof u.then==='function') u.then(play).catch(function(e){console.error('SOUND UNLOCK',e);});
+		else play();
 	},
 	PLAY_NAMED_WAVE(name){
 		const upper=String(name||'').toUpperCase();
@@ -5394,35 +6138,57 @@ BLACK.SOUND={
 	},
 	SNDPLAYNOTE(name,waveIdx,noteIdx){
 		const bank=this.BANKS[name];if(!bank) return;
-		waveIdx=this.RESOLVE_NAME(bank.waveNames,waveIdx,'WAVE',name);
-		noteIdx=this.RESOLVE_NAME(bank.noteNames,noteIdx,'NOTE',name);
+		try{
+			waveIdx=this.RESOLVE_NAME(bank.waveNames,waveIdx,'WAVE',name);
+			noteIdx=this.RESOLVE_NAME(bank.noteNames,noteIdx,'NOTE',name);
+		}catch(e){console.error(e);return;}
 		const pat=bank.notes[noteIdx];if(!pat) return;
 		const w=bank.waves[waveIdx]||bank.waves[0];if(!w) return;
 		const bpm=bank.master.bpm||120;
 		const stepDur=(60/bpm)/4;
-		pat.steps.forEach((p,i)=>{
-			if(p) setTimeout(()=>{this.ENGINE.PLAY(w,this.NOTE.FREQ(p),stepDur*0.9);},i*stepDur*1000);
-		});
+		// Unlock first, then schedule the notes.  This is especially important
+		// for the generated scenario/open-world entry cues.
+		const u=this.ENGINE.unlock?this.ENGINE.unlock():null;
+		const start=()=>{
+			pat.steps.forEach((p,i)=>{
+				if(p) setTimeout(()=>{try{this.ENGINE.PLAY(w,this.NOTE.FREQ(p),stepDur*0.9);}catch(e){console.error('ENGINE.PLAY',e);}},i*stepDur*1000);
+			});
+		};
+		if(u&&typeof u.then==='function') u.then(start).catch(function(e){console.error('SOUND UNLOCK',e);});
+		else start();
 	},
 	SNDPLAYTRACK(name,idx){
-		const bank=this.BANKS[name];if(!bank) return;
-		idx=this.RESOLVE_NAME(bank.trackNames,idx,'TRACK',name);
-		const tr=bank.tracks[idx];if(!tr) return;
-		const pat=bank.notes[tr.note];if(!pat) return;
-		this.SNDSTOPTRACK(name,idx);
+		const bank=this.BANKS[name];
+		if(!bank){console.warn('SOUND PLAYTRACK: unknown bank',name);return;}
+		let resolved;
+		try{resolved=this.RESOLVE_NAME(bank.trackNames,idx,'TRACK',name);}catch(e){console.error(e);return;}
+		const tr=bank.tracks[resolved];if(!tr) return;
+		const pat=bank.notes[tr.note];
+		if(!pat||!pat.steps||!pat.steps.length){console.warn('SOUND PLAYTRACK: missing NOTE',tr.note);return;}
+		this.SNDSTOPTRACK(name,resolved);
 		tr._playing=true;
-		const stepDur=(60/bank.master.bpm)/4;
-		const dest=this.ENGINE.getTrackMix('BANK:'+name+':'+idx,tr.vol!=null?tr.vol:1,tr.pan||0);
+		const bpm=Math.max(30,(bank.master&&bank.master.bpm)||120);
+		const stepDur=(60/bpm)/4;
 		const w=bank.waves[tr.wave]||bank.waves[0];
-		let i=0;
-		const step=()=>{
-			if(!tr._playing) return;
-			const p=pat.steps[i%pat.steps.length];
-			if(p) this.ENGINE.PLAY(w,this.NOTE.FREQ(p),stepDur*0.9,dest);
-			i++;
-			tr._timer=setTimeout(step,stepDur*1000);
+		if(!w){console.warn('SOUND PLAYTRACK: missing WAVE',tr.wave);return;}
+		const vol=tr.vol!=null?tr.vol:1;
+		const self=this;
+		const startTrack=function(){
+			const dest=self.ENGINE.getTrackMix('BANK:'+name+':'+resolved,vol,tr.pan||0);
+			let i=0;
+			const step=function(){
+				if(!tr._playing) return;
+				const p=pat.steps[i%pat.steps.length];
+				if(p){
+					try{self.ENGINE.PLAY(w,self.NOTE.FREQ(p),Math.max(0.12,stepDur*0.95),dest);}catch(err){console.error('ENGINE.PLAY',err);}
+				}
+				i++;
+				tr._timer=setTimeout(step,stepDur*1000);
+			};
+			step();
 		};
-		step();
+		const u=this.ENGINE.unlock?this.ENGINE.unlock():null;
+		if(u&&typeof u.then==='function') u.then(startTrack); else startTrack();
 	},
 	SNDSTOPTRACK(name,idx){
 		const bank=this.BANKS[name];if(!bank) return;
@@ -5452,6 +6218,16 @@ BLACK.GAME={
 	inventory:[],
 	FLAGS:{},
 	RECIPE:{genre:null,worldType:null,assets:[]},
+	QUESTS:[],
+	STRUCTURES:[],
+	AREAS:[],
+	SPAWNERS:[],
+	SCENARIO_SET_ID:null,
+	SCENARIO_DEBUG:{stage:'IDLE',last:'-',error:'',startedAt:0,endedAt:0},
+	SCENARIO_DEBUG_RESET(){this.SCENARIO_DEBUG={stage:'IDLE',last:'-',error:'',startedAt:performance.now(),endedAt:0};},
+	SCENARIO_DEBUG_STAGE(stage,last){const d=this.SCENARIO_DEBUG||{};d.stage=String(stage||'-');d.last=String(last||'-');d.error='';this.SCENARIO_DEBUG=d;},
+	SCENARIO_DEBUG_ERROR(stage,last,e){const d=this.SCENARIO_DEBUG||{};d.stage=String(stage||d.stage||'-');d.last=String(last||d.last||'-');d.error=String((e&&e.message)||e||'Unknown error');d.endedAt=performance.now();this.SCENARIO_DEBUG=d;},
+	SCENARIO_DEBUG_PUSH(arr,label,value){const d=this.SCENARIO_DEBUG;if(d) d.last=String(label||'-');if(!Array.isArray(arr)){const e=new Error('SCENARIO PUSH TARGET INVALID: '+label+' = '+String(arr));this.SCENARIO_DEBUG_ERROR(d&&d.stage,label,e);throw e;}arr.push(value);return value;},
 	SET_RECIPE(r){this.RECIPE=Object.assign({genre:null,worldType:null,assets:[]},r);},
 	nextStableId(prefix){return BLACK.SYS.nextStableId(prefix);},
 	PAGE(name){
@@ -5466,7 +6242,7 @@ BLACK.GAME={
 		this.curItem=-1;this.curEntity=-1;
 		this.RECIPE={genre:null,worldType:null,assets:[]};
 		this.balance=0;this.journal=[];this.chapter=0;
-		this.QUESTS=[];this.STRUCTURES=[];this.AREAS=[];this.SCENARIO_SET_ID=null;
+		this.QUESTS=[];this.STRUCTURES=[];this.AREAS=[];this.SPAWNERS=[];this.SCENARIO_SET_ID=null;this.SCENARIO_DEBUG_RESET();
 	},
 	STRUCTURE_CATALOG:{
 		CASTLE:{shape:'BOX',w:9,h:9,wall:1,tags_org:['NATION','HOUSE','RANK'],meso_bias:['KIN_STRIFE','COMBAT'],micro_acts:['TALK','COLLECT_ITEM','COMBAT']},
@@ -5500,7 +6276,15 @@ BLACK.GAME={
 		h=Math.imul(h^h>>>16,2246822507);h=Math.imul(h^h>>>13,3266489909);
 		return (h^h>>>16)>>>0;
 	},
-	QUEST_RESET(){this.QUESTS=[];this.STRUCTURES=[];this.AREAS=[];this.SCENARIO_SET_ID=null;},
+	// Lighten (amt>0) or darken (amt<0) a '#rrggbb' color by amt (-1..1). Used to bevel individual
+	// stones/bricks (light edge toward the top-left, shadow edge toward the bottom-right) so wall
+	// tiles read as separate raised blocks instead of a flat hashed checkerboard.
+	_shade(hex,amt){
+		const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+		const f=v=>Math.max(0,Math.min(255,Math.round(amt>0?v+(255-v)*amt:v*(1+amt))));
+		return '#'+[f(r),f(g),f(b)].map(v=>v.toString(16).padStart(2,'0')).join('');
+	},
+	QUEST_RESET(){this.QUESTS=[];this.STRUCTURES=[];this.AREAS=[];this.SPAWNERS=[];this.SCENARIO_SET_ID=null;this._scenarioAppliedSeed=null;},
 	QUEST_FIND_INDEX(id){const key=String(id||'');return this.QUESTS.findIndex(q=>q&&q.id===key);},
 	QUEST_GET(id){const i=this.QUEST_FIND_INDEX(id);return i<0?null:this.QUESTS[i];},
 	QUEST_STATE_CODE(id){const q=this.QUEST_GET(id);if(!q) return -1;return {LOCKED:0,ACTIVE:1,DONE:2,FAILED:3}[q.state]|0;},
@@ -5558,13 +6342,23 @@ BLACK.GAME={
 		return 1;
 	},
 	QUEST_LIST(scale){const sc=scale?String(scale).toUpperCase():null;return this.QUESTS.filter(q=>!sc||q.scale===sc).map(q=>q.id);},
-	QUEST_DUMP(){return this.QUESTS.map(q=>({id:q.id,scale:q.scale,area:q.area_id,parent:q.parent_id,state:q.state,xy:[q.map_x,q.map_y],st:q.structure_type,acts:q.acts,kind:q.req_kind||q.reward_kind||null,payload:q.req_payload||q.reward_payload||null,bond:q.tags_bond,event:q.event_name,trial:q.macro_kind||null,boss:q.boss_name||null})).concat([{areas:this.AREAS.map(a=>({id:a.id,kind:a.kind,box:[a.x0,a.y0,a.x1,a.y1],structure:a.structure_id,quests:a.quest_ids.length}))},{structures:this.STRUCTURES.map(s=>({id:s.id,type:s.type,shape:s.shape,area:s.area_id,o:[s.origin_x,s.origin_y],wh:[s.w,s.h]}))}]);},
+	QUEST_DUMP(){return this.QUESTS.map(q=>({id:q.id,scale:q.scale,area:q.area_id,parent:q.parent_id,state:q.state,xy:[q.map_x,q.map_y],st:q.structure_type,acts:q.acts,kind:q.req_kind||q.reward_kind||null,payload:q.req_payload||q.reward_payload||null,bond:q.tags_bond,event:q.event_name,trial:q.macro_kind||null,boss:q.boss_name||null})).concat([{areas:this.AREAS.map(a=>({id:a.id,kind:a.kind,box:[a.x0,a.y0,a.x1,a.y1],structure:a.structure_id,quests:a.quest_ids.length}))},{structures:this.STRUCTURES.map(s=>({id:s.id,type:s.type,shape:s.shape,area:s.area_id,o:[s.origin_x,s.origin_y],wh:[s.w,s.h]}))},{spawners:this.SPAWNERS.map(sp=>({id:sp.id,area:sp.area_id,xy:[sp.x,sp.y],enemy:sp.enemy_name,count:sp.count,waves:sp.waves,trigger:sp.trigger,mode:sp.mode}))}]);},
 	TILE_SIZE:16,
 	WALL_MATERIAL:{
-		CASTLE:'TORCH',FORT:'TORCH',CHURCH:'STONE',CATACOMB:'CRACKED',RUIN:'CRACKED',
+		CASTLE:'TORCH',FORT:'TORCH',CHURCH:'STONE',CATACOMB:'CRACKED',RUIN:'IVY',
 		GRAVEYARD:'CRACKED',CLIFF:'WATER',RIVER:'WATER',
 		TOWN:'BRICK',SCHOOL:'BRICK',
 		VILLAGE:'MUD',PORT:'WOOD',FOREST:'WOOD',BEACH:'WOOD'
+	},
+	FLOOR_MATERIAL:{
+		CASTLE:'STONE',FORT:'STONE',CHURCH:'STONE',CATACOMB:'BONE',RUIN:'MOSS',
+		GRAVEYARD:'DIRT',CLIFF:'ROCK',RIVER:'MUD',
+		TOWN:'COBBLE',SCHOOL:'WOOD',
+		VILLAGE:'DIRT',PORT:'PLANK',FOREST:'GRASS',BEACH:'SAND',
+		DEFAULT:'GRASS'
+	},
+	OUTDOOR_STRUCTURE:{
+		GRAVEYARD:1,CLIFF:1,RIVER:1,FOREST:1,BEACH:1,PORT:1,VILLAGE:1,TOWN:1
 	},
 	_buildBrickTile(){
 		const size=this.TILE_SIZE;
@@ -5577,7 +6371,13 @@ BLACK.GAME={
 			for(let x=0;x<size;x++){
 				const xx=(x+offset)%size,inBrick=xx%brickW;
 				if(inRow===0||inBrick===0){px[y*size+x]=mortar;}
-				else{const bi=Math.floor(xx/brickW)+row;px[y*size+x]=(bi%2===0)?brickA:brickB;}
+				else{
+					const bi=Math.floor(xx/brickW)+row;
+					let c=(bi%2===0)?brickA:brickB;
+					if(inRow===1||inBrick===1) c=this._shade(c,0.16);
+					else if(inRow===rowH-1||inBrick===brickW-1) c=this._shade(c,-0.16);
+					px[y*size+x]=c;
+				}
 			}
 		}
 		return px;
@@ -5592,25 +6392,44 @@ BLACK.GAME={
 				const xx=(x+stagger)%size,bx=Math.floor(xx/blk);
 				const edge=(y%blk===0)||(xx%blk===0);
 				if(edge){px[y*size+x]=mortar;}
-				else{const h=this._hash(bx*131+by*977,42);px[y*size+x]=stones[h%stones.length];}
+				else{
+					const h=this._hash(bx*131+by*977,42);
+					let c=stones[h%stones.length];
+					const lx=xx%blk,ly=y%blk;
+					if(lx===1||ly===1) c=this._shade(c,0.18);
+					else if(lx===blk-1||ly===blk-1) c=this._shade(c,-0.18);
+					px[y*size+x]=c;
+				}
 			}
 		}
 		return px;
 	},
 	_buildWoodTile(){
 		const size=this.TILE_SIZE;
-		const seam='#7a5230';
+		const seam='#7a5230',nail=this._shade(seam,-0.35);
 		const planks=['#caa06a','#c2925a','#d4ac74'];
 		const grainShade=['#b88f57','#b0824f','#c29c67'];
 		const px=new Array(size*size),plankW=Math.max(3,Math.round(size/3));
+		const midY=Math.floor(size/2); // horizontal joint splitting each vertical plank into two boards
 		for(let y=0;y<size;y++){
 			for(let x=0;x<size;x++){
 				const plank=Math.floor(x/plankW),inPlank=x%plankW;
-				if(inPlank===0){px[y*size+x]=seam;continue;}
+				if(inPlank===0||y===midY){px[y*size+x]=seam;continue;}
 				const idx=plank%planks.length;
 				const grainLine=((y+plank*5)%7===0);
-				px[y*size+x]=grainLine?grainShade[idx]:planks[idx];
+				let c=grainLine?grainShade[idx]:planks[idx];
+				if(inPlank===1) c=this._shade(c,0.12); // light edge, left of each board
+				else if(inPlank===plankW-1) c=this._shade(c,-0.12); // shadow edge, right of each board
+				px[y*size+x]=c;
 			}
+		}
+		// one nail/bolt dot near the top and bottom of each plank, like the riveted boards in the reference sheet
+		for(let plank=0;plank*plankW<size;plank++){
+			const nx=plank*plankW+Math.min(plankW-1,2);
+			if(nx>=size) continue;
+			const nyTop=Math.max(1,Math.round(midY*0.4)),nyBot=Math.min(size-2,Math.round(midY*1.6));
+			px[nyTop*size+nx]=nail;
+			px[nyBot*size+nx]=nail;
 		}
 		return px;
 	},
@@ -5629,7 +6448,10 @@ BLACK.GAME={
 				if(inRow===0||inBrick===0){px[y*size+x]=mortar;continue;}
 				const bi=Math.floor(xx/brickW)+row;
 				const h=this._hash(x*53+y*197,7);
-				px[y*size+x]=(h%9===0)?straw:((bi%2===0)?brickA:brickB);
+				let c=(bi%2===0)?brickA:brickB;
+				if(inRow===1||inBrick===1) c=this._shade(c,0.16);
+				else if(inRow===rowH-1||inBrick===brickW-1) c=this._shade(c,-0.16);
+				px[y*size+x]=(h%9===0)?straw:c;
 			}
 		}
 		return px;
@@ -5645,24 +6467,35 @@ BLACK.GAME={
 			for(let x=0;x<size;x++){
 				const xx=(x+stagger)%size,bx=Math.floor(xx/blk);
 				const edge=(y%blk===0)||(xx%blk===0);
-				px[y*size+x]=edge?mortar:stones[this._hash(bx*131+by*977,42)%stones.length];
+				if(edge){px[y*size+x]=mortar;continue;}
+				let c=stones[this._hash(bx*131+by*977,42)%stones.length];
+				const lx=xx%blk,ly=y%blk;
+				if(lx===1||ly===1) c=this._shade(c,0.18);
+				else if(lx===blk-1||ly===blk-1) c=this._shade(c,-0.18);
+				px[y*size+x]=c;
 			}
 		}
 		const cx=Math.round(size*0.5),bracket='#3a2818';
-		const flameLayers=[
-			{cy:size*0.78,r:1.6,c:'#241a12'},
-			{cy:size*0.62,r:1.6,c:'#7a1a00'},
-			{cy:size*0.52,r:1.3,c:'#c23a00'},
-			{cy:size*0.42,r:1.0,c:'#f28a00'},
-			{cy:size*0.34,r:0.6,c:'#ffd23d'}
-		];
-		for(let y=Math.round(size*0.66);y<size;y++) px[y*size+cx]=bracket;
-		for(const L of flameLayers){
-			const y0=Math.max(0,Math.round(L.cy-L.r)),y1=Math.min(size-1,Math.round(L.cy+L.r));
-			for(let y=y0;y<=y1;y++){
-				const dy=Math.abs(y-L.cy),spread=Math.max(0,Math.round(L.r-dy));
-				for(let dx=-spread;dx<=spread;dx++) px[y*size+Math.min(size-1,Math.max(0,cx+dx))]=L.c;
-			}
+		// short wall-mounted sconce: hangs mid-wall (gap above and below, so it doesn't touch the
+		// floor or ceiling of the tile) with a uniform width for both the mount and the flame --
+		// no widening near the base -- so it reads as a torch fixed to the wall, not a floor torch.
+		const w=1; // uniform width in columns for the whole torch (mount + flame)
+		const torchTop=Math.round(size*0.22),torchBase=Math.round(size*0.72);
+		const mountH=Math.max(1,Math.round((torchBase-torchTop)*0.3));
+		const flameYTop=torchTop,flameYBase=torchBase-mountH-1;
+		const flameH=Math.max(1,flameYBase-flameYTop);
+		for(let y=flameYTop;y<=flameYBase;y++){
+			const t=(y-flameYTop)/flameH; // 0 = tip (top), 1 = base (bottom)
+			let c;
+			if(t<0.18) c='#ffd23d';
+			else if(t<0.42) c='#f28a00';
+			else if(t<0.68) c='#c23a00';
+			else if(t<0.88) c='#7a1a00';
+			else c='#241a12';
+			for(let dx=0;dx<w;dx++) if(cx+dx<size) px[y*size+cx+dx]=c;
+		}
+		for(let y=torchBase-mountH;y<=torchBase;y++){
+			for(let dx=0;dx<w;dx++) if(cx+dx<size) px[y*size+cx+dx]=bracket;
 		}
 		return px;
 	},
@@ -5678,7 +6511,12 @@ BLACK.GAME={
 			for(let x=0;x<size;x++){
 				const xx=(x+stagger)%size,bx=Math.floor(xx/blk);
 				const edge=(y%blk===0)||(xx%blk===0);
-				px[y*size+x]=edge?mortar:stones[this._hash(bx*131+by*977,17)%stones.length];
+				if(edge){px[y*size+x]=mortar;continue;}
+				let c=stones[this._hash(bx*131+by*977,17)%stones.length];
+				const lx=xx%blk,ly=y%blk;
+				if(lx===1||ly===1) c=this._shade(c,0.18);
+				else if(lx===blk-1||ly===blk-1) c=this._shade(c,-0.18);
+				px[y*size+x]=c;
 			}
 		}
 		const cx=Math.round(size*0.5);
@@ -5708,7 +6546,12 @@ BLACK.GAME={
 			for(let x=0;x<size;x++){
 				const xx=(x+stagger)%size,bx=Math.floor(xx/blk);
 				const edge=(y%blk===0)||(xx%blk===0);
-				px[y*size+x]=edge?mortar:stones[this._hash(bx*131+by*977,73)%stones.length];
+				if(edge){px[y*size+x]=mortar;continue;}
+				let c=stones[this._hash(bx*131+by*977,73)%stones.length];
+				const lx=xx%blk,ly=y%blk;
+				if(lx===1||ly===1) c=this._shade(c,0.18);
+				else if(lx===blk-1||ly===blk-1) c=this._shade(c,-0.18);
+				px[y*size+x]=c;
 			}
 		}
 		const crack='#171310';
@@ -5721,12 +6564,157 @@ BLACK.GAME={
 		}
 		return px;
 	},
+	_buildIvyTile(){
+		// stone base (same as _buildStoneTile) with a winding green vine + leaf clusters growing over
+		// it, for overgrown/ruined structures. Vine path and leaf placement are deterministic via
+		// _hash so the tile regenerates identically every time.
+		const size=this.TILE_SIZE;
+		const mortar='#3f3f3c',stones=['#8d8d84','#7a7a70','#9a9a8f','#6f6f65'];
+		const px=new Array(size*size),blk=4;
+		for(let y=0;y<size;y++){
+			const by=Math.floor(y/blk),stagger=(by%2)?Math.floor(blk/2):0;
+			for(let x=0;x<size;x++){
+				const xx=(x+stagger)%size,bx=Math.floor(xx/blk);
+				const edge=(y%blk===0)||(xx%blk===0);
+				if(edge){px[y*size+x]=mortar;continue;}
+				let c=stones[this._hash(bx*131+by*977,42)%stones.length];
+				const lx=xx%blk,ly=y%blk;
+				if(lx===1||ly===1) c=this._shade(c,0.18);
+				else if(lx===blk-1||ly===blk-1) c=this._shade(c,-0.18);
+				px[y*size+x]=c;
+			}
+		}
+		const vine='#2f5c2a',leafA='#4f8c3a',leafB='#6fae4c',leafDark='#3a6b2c';
+		let vx=Math.round(size*0.5);
+		for(let y=0;y<size;y++){
+			vx=Math.max(1,Math.min(size-2,vx+((this._hash(y,151)%3)-1))); // vine drifts left/right a little each row
+			px[y*size+vx]=vine;
+			if(this._hash(y,211)%3===0){ // occasional leaf cluster hanging off the vine
+				const dir=(this._hash(y,233)%2===0)?1:-1,lxp=vx+dir;
+				if(lxp>=0&&lxp<size) px[y*size+lxp]=leafA;
+				if(y+1<size) px[(y+1)*size+vx]=leafB;
+				if(lxp>=0&&lxp<size&&y>0) px[(y-1)*size+lxp]=leafDark;
+			}
+		}
+		return px;
+	},
 	_buildFloorTile(){
 		const size=this.TILE_SIZE;
 		const a='#6b6b62',b='#5c5c54';
 		const px=new Array(size*size),blk=Math.max(2,Math.round(size/4));
 		for(let y=0;y<size;y++) for(let x=0;x<size;x++) px[y*size+x]=((Math.floor(x/blk)+Math.floor(y/blk))%2===0)?a:b;
 		return px;
+	},
+	_buildFloorGrass(){
+		const size=this.TILE_SIZE,px=new Array(size*size);
+		const greens=['#3d6b2e','#4a7a38','#355f28','#5a8c42','#2f5522'];
+		for(let y=0;y<size;y++) for(let x=0;x<size;x++){
+			let c=greens[this._hash(x*17+y*31,11)%greens.length];
+			if((x+y*3)%7===0) c=this._shade(c,0.12);
+			if((x*3+y)%11===0) c=this._shade(c,-0.1);
+			px[y*size+x]=c;
+		}
+		return px;
+	},
+	_buildFloorClay(){
+		const size=this.TILE_SIZE,px=new Array(size*size);
+		const cols=['#b07a4a','#a06a3e','#c08a58','#8a5a32'];
+		for(let y=0;y<size;y++) for(let x=0;x<size;x++){
+			let c=cols[this._hash(x*11+y*19,12)%cols.length];
+			if((x+y)%6===0) c=this._shade(c,-0.08);
+			px[y*size+x]=c;
+		}
+		return px;
+	},
+	_buildFloorGlass(){
+		// Pale cyan glass-like floor for open-world special patches.
+		const size=this.TILE_SIZE,px=new Array(size*size);
+		const cols=['#a8d8e8','#98c8d8','#b8e0f0','#88b8c8'];
+		for(let y=0;y<size;y++) for(let x=0;x<size;x++){
+			let c=cols[this._hash(x*7+y*13,14)%cols.length];
+			if((x%4===0)||(y%4===0)) c=this._shade(c,0.12);
+			px[y*size+x]=c;
+		}
+		return px;
+	},
+	_buildFloorDirt(){
+		const size=this.TILE_SIZE,px=new Array(size*size);
+		const cols=['#6b4e2e','#5a4126','#7a5a38','#4e3a22'];
+		for(let y=0;y<size;y++) for(let x=0;x<size;x++){
+			let c=cols[this._hash(x*13+y*29,21)%cols.length];
+			if((x^y)%5===0) c=this._shade(c,-0.12);
+			px[y*size+x]=c;
+		}
+		return px;
+	},
+	_buildFloorSand(){
+		const size=this.TILE_SIZE,px=new Array(size*size);
+		const cols=['#c8b47a','#b8a468','#d4c28a','#a8945c'];
+		for(let y=0;y<size;y++) for(let x=0;x<size;x++) px[y*size+x]=cols[this._hash(x*7+y*19,33)%cols.length];
+		return px;
+	},
+	_buildFloorMoss(){
+		const size=this.TILE_SIZE,px=this._buildFloorTile();
+		const moss=['#3a5c2e','#4a6e38','#2e4a24'];
+		for(let y=0;y<size;y++) for(let x=0;x<size;x++) if(this._hash(x*41+y*17,44)%3===0) px[y*size+x]=moss[this._hash(x+y,45)%moss.length];
+		return px;
+	},
+	_buildFloorBone(){
+		const size=this.TILE_SIZE,px=new Array(size*size);
+		const base=['#3a342e','#2e2924','#454038'];
+		const bone=['#d4cbb8','#c2b8a4','#e0d8c8'];
+		for(let y=0;y<size;y++) for(let x=0;x<size;x++){
+			px[y*size+x]=base[this._hash(x*11+y*23,51)%base.length];
+			if(this._hash(x*9+y*13,52)%7===0) px[y*size+x]=bone[this._hash(x+y,53)%bone.length];
+		}
+		return px;
+	},
+	_buildFloorCobble(){
+		const size=this.TILE_SIZE,px=new Array(size*size),blk=Math.max(2,Math.round(size/4));
+		const a='#7a7a72',b='#6a6a64',g='#4a4a46';
+		for(let y=0;y<size;y++) for(let x=0;x<size;x++){
+			if(x%blk===0||y%blk===0) px[y*size+x]=g;
+			else px[y*size+x]=((Math.floor(x/blk)+Math.floor(y/blk))%2===0)?a:b;
+		}
+		return px;
+	},
+	_buildFloorPlank(){
+		const size=this.TILE_SIZE,px=new Array(size*size);
+		const woods=['#8b5a2b','#7a4e24','#9a6a38','#6e451e'];
+		for(let y=0;y<size;y++) for(let x=0;x<size;x++){
+			let c=woods[Math.floor(y/2)%woods.length];
+			if(x%4===0) c=this._shade(c,-0.2);
+			else if(this._hash(x+y*3,61)%9===0) c=this._shade(c,0.1);
+			px[y*size+x]=c;
+		}
+		return px;
+	},
+	_buildFloorMud(){
+		const size=this.TILE_SIZE,px=new Array(size*size);
+		const cols=['#5a4a32','#4a3c28','#6a5840'];
+		for(let y=0;y<size;y++) for(let x=0;x<size;x++) px[y*size+x]=cols[this._hash(x*5+y*11,71)%cols.length];
+		return px;
+	},
+	_buildFloorRock(){
+		const size=this.TILE_SIZE,px=new Array(size*size);
+		const cols=['#6e6e68','#5a5a54','#82827a','#484842'];
+		for(let y=0;y<size;y++) for(let x=0;x<size;x++) px[y*size+x]=cols[this._hash(x*19+y*7,81)%cols.length];
+		return px;
+	},
+	_floorTileIndex(mat){
+		const m=String(mat||'STONE').toUpperCase();
+		if(m==='GRASS') return this._ensureSprite('FLOOR_GRASS',this._buildFloorGrass);
+		if(m==='CLAY') return this._ensureSprite('FLOOR_CLAY',this._buildFloorClay);
+		if(m==='GLASS') return this._ensureSprite('FLOOR_GLASS',this._buildFloorGlass);
+		if(m==='DIRT') return this._ensureSprite('FLOOR_DIRT',this._buildFloorDirt);
+		if(m==='SAND') return this._ensureSprite('FLOOR_SAND',this._buildFloorSand);
+		if(m==='MOSS') return this._ensureSprite('FLOOR_MOSS',this._buildFloorMoss);
+		if(m==='BONE') return this._ensureSprite('FLOOR_BONE',this._buildFloorBone);
+		if(m==='COBBLE') return this._ensureSprite('FLOOR_COBBLE',this._buildFloorCobble);
+		if(m==='PLANK'||m==='WOOD') return this._ensureSprite('FLOOR_PLANK',this._buildFloorPlank);
+		if(m==='MUD') return this._ensureSprite('FLOOR_MUD',this._buildFloorMud);
+		if(m==='ROCK') return this._ensureSprite('FLOOR_ROCK',this._buildFloorRock);
+		return this._ensureSprite('FLOOR_STONE',this._buildFloorTile);
 	},
 	_buildCeilTile(){
 		const size=this.TILE_SIZE;
@@ -5735,22 +6723,110 @@ BLACK.GAME={
 		for(let y=0;y<size;y++) for(let x=0;x<size;x++) px[y*size+x]=(x%4===0||y%4===0)?b:a;
 		return px;
 	},
+	_buildCeilSky(){
+		const size=this.TILE_SIZE,px=new Array(size*size);
+		const sky=['#5a7ab0','#6a8ac0','#4a6a9a','#7a9ad0'];
+		for(let y=0;y<size;y++) for(let x=0;x<size;x++){
+			let c=sky[this._hash(x+y*3,91)%sky.length];
+			if(y<size*0.35) c=this._shade(c,0.08);
+			px[y*size+x]=c;
+		}
+		return px;
+	},
+	_enemyThemeFromType(type){
+		const t=String(type||'').toUpperCase();
+		if(t.indexOf('GRAVEYARD')>=0||t.indexOf('CATACOMB')>=0) return 'GRAVEYARD';
+		if(t.indexOf('FOREST')>=0) return 'FOREST';
+		if(t.indexOf('BEACH')>=0||t.indexOf('PORT')>=0||t.indexOf('RIVER')>=0) return 'COAST';
+		if(t.indexOf('FORT')>=0||t.indexOf('CASTLE')>=0||t.indexOf('ORDER')>=0) return 'SOLDIER';
+		if(t.indexOf('RUIN')>=0||t.indexOf('CLIFF')>=0) return 'RUIN';
+		if(t.indexOf('CHURCH')>=0||t.indexOf('SECT')>=0) return 'CULT';
+		return 'DEFAULT';
+	},
+	_buildEnemySprite(seed,theme){
+		const size=16,px=new Array(size*size);
+		for(let i=0;i<px.length;i++) px[i]='';
+		const S=(x,y,c)=>{if(x>=0&&x<size&&y>=0&&y<size) px[y*size+x]=c;};
+		const H=(x,y)=>BLACK.GAME._hash((seed|0)+x*131+y*977,17);
+		const th=String(theme||'DEFAULT').toUpperCase();
+		let body,eye,accent;
+		if(th==='GRAVEYARD'){
+			body=['#d8d0c0','#c4bba8','#a89f8c','#ece4d4'];
+			eye='#1a1010'; accent='#6a6050';
+			for(let y=2;y<=6;y++) for(let x=5;x<=10;x++) if(Math.abs(x-7.5)<2.8-(y===2?0.8:0)) S(x,y,body[H(x,y)%body.length]);
+			S(6,4,eye);S(9,4,eye);
+			for(let x=6;x<=9;x++) S(x,6,accent);
+			for(let y=7;y<=11;y++){S(7,y,body[0]);S(8,y,body[1]);}
+			for(let y=8;y<=10;y++){S(5,y,body[H(5,y)%body.length]);S(10,y,body[H(10,y)%body.length]);}
+			for(let y=12;y<=14;y++){S(6,y,body[2]);S(9,y,body[2]);}
+			S(3,13,body[0]);S(4,14,body[1]);S(11,13,body[0]);S(12,14,body[2]);
+			return px;
+		}
+		if(th==='FOREST'){ body=['#3a5c28','#4a702e','#2e4a20','#5a8040']; eye='#f0e060'; accent='#1a2010'; }
+		else if(th==='COAST'){ body=['#3a6a7a','#4a7a8a','#2e5a68','#5a8a9a']; eye='#e8e8f0'; accent='#1a3040'; }
+		else if(th==='SOLDIER'){ body=['#6a6e78','#8a8e98','#4a4e58','#a0a4b0']; eye='#202028'; accent='#8a3030'; }
+		else if(th==='RUIN'){ body=['#7a6a58','#8a7a68','#5a4a38','#9a8a78']; eye='#c0b090'; accent='#3a3020'; }
+		else if(th==='CULT'){ body=['#4a3a58','#5a4a68','#3a2a48','#6a5a78']; eye='#e0c060'; accent='#2a1838'; }
+		else { body=['#5b5b5b','#747474','#3a3a3a','#9a9a9a']; eye='#d9d9d9'; accent='#222222'; }
+		for(let y=2;y<=5;y++) for(let x=5;x<=10;x++) if(Math.abs(x-7.5)<2.6) S(x,y,body[H(x,y)%body.length]);
+		for(let y=6;y<=10;y++) for(let x=4;x<=11;x++) if(Math.abs(x-7.5)<3.6) S(x,y,body[H(x,y+7)%body.length]);
+		for(let y=7;y<=10;y++){S(3,y,body[H(3,y)%body.length]);S(12,y,body[H(12,y)%body.length]);}
+		for(let y=11;y<=14;y++){S(5,y,body[H(5,y)%body.length]);S(10,y,body[H(10,y)%body.length]);}
+		S(6,4,eye);S(9,4,eye);
+		S(6,8,accent);S(7,8,accent);S(8,8,accent);S(9,8,accent);
+		for(let x=4;x<=11;x++) S(x,10,this._shade(body[2],-0.15));
+		S(2,6,body[3]);S(13,6,body[3]);
+		return px;
+	},
+	_ensureEnemySprite(name,seed,theme){
+		const n=BLACK.SYS.sanitizeName(name||'ENEMY');
+		const th=this._enemyThemeFromType(theme||n);
+		const spriteName='ENEMY_'+n+(th!=='DEFAULT'?('_'+th):'');
+		const self=this;
+		return this._ensureSprite(spriteName,function(){return self._buildEnemySprite(seed||0,th);});
+	},
 	_ensureSprite(name,builderFn){
 		const arr=BLACK.GRAPHIC.SPRITES;
 		const idx=arr.findIndex(s=>s&&s.name===name);
+		if(idx>=0) return idx;
 		const pixels=builderFn.call(this);
-		if(idx>=0){arr[idx].pixels=pixels;arr[idx].size=this.TILE_SIZE;BLACK.GRAPHIC.invalidateSpriteCache(arr[idx]);return idx;}
 		arr.push({size:this.TILE_SIZE,pixels,name,stableId:BLACK.GRAPHIC.nextStableId('sprite')});
 		return arr.length-1;
 	},
 	_materialTileIndex(mat){
 		if(mat==='BRICK') return this._ensureSprite('WALL_BRICK',this._buildBrickTile);
 		if(mat==='WOOD') return this._ensureSprite('WALL_WOOD',this._buildWoodTile);
+		if(mat==='HUT') return this._ensureSprite('WALL_HUT',this._buildHutTile);
+		if(mat==='ROCK') return this._ensureSprite('WALL_ROCK',this._buildRockTile);
 		if(mat==='MUD') return this._ensureSprite('WALL_MUD',this._buildMudTile);
 		if(mat==='TORCH') return this._ensureSprite('WALL_TORCH',this._buildTorchTile);
 		if(mat==='WATER') return this._ensureSprite('WALL_WATER',this._buildWaterTile);
 		if(mat==='CRACKED') return this._ensureSprite('WALL_CRACKED',this._buildCrackedTile);
+		if(mat==='IVY') return this._ensureSprite('WALL_IVY',this._buildIvyTile);
 		return this._ensureSprite('WALL_STONE',this._buildStoneTile);
+	},
+	_buildHutTile(){
+		// Wooden cabin planks with darker seams.
+		const size=this.TILE_SIZE,px=new Array(size*size);
+		const woods=['#8b5a2b','#7a4e24','#9a6a38','#6e451e','#a07040'];
+		for(let y=0;y<size;y++) for(let x=0;x<size;x++){
+			let c=woods[(Math.floor(y/2)+Math.floor(x/8))%woods.length];
+			if(x%5===0) c=this._shade(c,-0.25);
+			else if(y%4===0) c=this._shade(c,-0.1);
+			px[y*size+x]=c;
+		}
+		return px;
+	},
+	_buildRockTile(){
+		const size=this.TILE_SIZE,px=new Array(size*size);
+		const cols=['#6a6a62','#7a7a70','#5a5a54','#8a8a80','#4a4a46'];
+		for(let y=0;y<size;y++) for(let x=0;x<size;x++){
+			let c=cols[this._hash(x*19+y*23,101)%cols.length];
+			if(this._hash(x*3+y,102)%5===0) c=this._shade(c,0.15);
+			if(this._hash(x+y*5,103)%7===0) c=this._shade(c,-0.2);
+			px[y*size+x]=c;
+		}
+		return px;
 	},
 	_structFootprint(type){
 		const cat=this.STRUCTURE_CATALOG[type]||this.STRUCTURE_CATALOG.VILLAGE;
@@ -5762,8 +6838,10 @@ BLACK.GAME={
 		const w=fp.w,h=fp.h,shape=fp.shape;
 		const wallTile=this._materialTileIndex(this.WALL_MATERIAL[type]||'STONE'),floor=-1;
 		const placeable=[];
-		const stamp=(x,y,v)=>{if(x>0&&y>0&&x<S-1&&y<S-1) BLACK.WORLD.MAP.SET(x,y,v);};
-		const open=(x,y)=>{if(x>0&&y>0&&x<S-1&&y<S-1){BLACK.WORLD.MAP.SET(x,y,floor);placeable.push({x,y,kind:'floor'});}};
+		const gdata=BLACK.GRAPHIC.MAP.DATA;
+		const write=(x,y,v)=>{if(x>0&&y>0&&x<S-1&&y<S-1) gdata[y*S+x]=v;};
+		const stamp=(x,y,v)=>write(x,y,v);
+		const open=(x,y)=>{if(x>0&&y>0&&x<S-1&&y<S-1){write(x,y,floor);placeable.push({x,y});}};
 		const salt=this._hash(ox*73856093,oy*19349663);
 		for(let dy=0;dy<h;dy++) for(let dx=0;dx<w;dx++){
 			const x=ox+dx,y=oy+dy;
@@ -5779,9 +6857,30 @@ BLACK.GAME={
 		}
 		if(shape==='BOX'||shape==='MAZE') stamp(ox+((w/2)|0),oy+h-1,floor);
 		if(!placeable.length) placeable.push({x:ox+((w/2)|0),y:oy+((h/2)|0),kind:'center'});
+		const gmap=BLACK.GRAPHIC.MAP;
+		if(gmap&&gmap.ensureLayers){
+			gmap.ensureLayers();
+			const floorMat=(this.FLOOR_MATERIAL&&this.FLOOR_MATERIAL[type])||'STONE';
+			const floorIdx=this._floorTileIndex(floorMat);
+			const outdoor=this.OUTDOOR_STRUCTURE&&this.OUTDOOR_STRUCTURE[type];
+			const openWorld=this._worldKind==='OPEN';
+			const ceilIdx=(openWorld&&outdoor)
+				?this._ensureSprite('CEIL_SKY',this._buildCeilSky)
+				:this._ensureSprite('CEIL_DARK',this._buildCeilTile);
+			for(let yy=oy;yy<oy+h;yy++){
+				for(let xx=ox;xx<ox+w;xx++){
+					if(xx<=0||yy<=0||xx>=S-1||yy>=S-1) continue;
+					const i=yy*S+xx;
+					if(gdata[i]<0){
+						gmap.FLOOR_DATA[i]=floorIdx;
+						gmap.CEIL_DATA[i]=ceilIdx;
+					}
+				}
+			}
+		}
 		const id='ST_'+this.STRUCTURES.length;
-		const st={id,type,shape,origin_x:ox,origin_y:oy,w,h,cx:ox+((w/2)|0),cy:oy+((h/2)|0),placeable,pool:placeable.slice(),bound_quest_ids:[]};
-		this.STRUCTURES.push(st);
+		const st={id,type,shape,origin_x:ox,origin_y:oy,w,h,cx:ox+((w/2)|0),cy:oy+((h/2)|0),placeable,pool:placeable.slice(),bound_quest_ids:[],floor_mat:(this.FLOOR_MATERIAL&&this.FLOOR_MATERIAL[type])||'STONE'};
+		this.SCENARIO_DEBUG_PUSH(this.STRUCTURES,'STRUCTURES.push',st);
 		return st;
 	},
 	_takePlaceable(st,salt){
@@ -5793,10 +6892,11 @@ BLACK.GAME={
 	},
 	_carvePath(x0,y0,x1,y1,S){
 		const lim=(v)=>Math.max(1,Math.min(S-2,v|0));
+		const data=BLACK.GRAPHIC.MAP.DATA;
 		let x=lim(x0),y=lim(y0);const tx=lim(x1),ty=lim(y1);
-		while(x!==tx){BLACK.WORLD.MAP.SET(x,y,-1);x+=x<tx?1:-1;}
-		while(y!==ty){BLACK.WORLD.MAP.SET(x,y,-1);y+=y<ty?1:-1;}
-		BLACK.WORLD.MAP.SET(tx,ty,-1);
+		while(x!==tx){data[y*S+x]=-1;x+=x<tx?1:-1;}
+		while(y!==ty){data[y*S+x]=-1;y+=y<ty?1:-1;}
+		data[ty*S+tx]=-1;
 	},
 	_payloadName(kind,key,org,role,bond,tag){
 		const clean=(v)=>String(v||'').toUpperCase().replace(/[^A-Z0-9_]/g,'_');
@@ -5815,17 +6915,22 @@ BLACK.GAME={
 		if(!n||this.ENTITIES.some(e=>e&&e.name===n)) return 0;
 		const e=this.DEFAULT_ENTITY();
 		e.kind='CHARACTER';e.name=n;e.ai='STATIC';e.hp=20;e.attack=0;
-		this.ENTITIES.push(e);
+		this.SCENARIO_DEBUG_PUSH(this.ENTITIES,'ENTITIES.push',e);
 		return 1;
 	},
-	_ensureEnemy(name,hp,attack){
+	_ensureEnemy(name,hp,attack,theme){
 		const n=BLACK.SYS.sanitizeName(name);
 		if(!n||this.ENTITIES.some(e=>e&&e.name===n)) return 0;
 		const e=this.DEFAULT_ENTITY();
-		e.kind='ENEMY';e.name=n;e.ai='CHASE';e.hp=Number(hp)||120;e.attack=Number(attack)||9;e.speed=1.1;
-		const sp=(BLACK.GRAPHIC.SPRITES||[]).find(x=>x&&x.name);
-		e.spriteName=sp?sp.name:'';
-		this.ENTITIES.push(e);
+		e.kind='ENEMY';e.name=n;e.ai='STATE';e.hp=Number(hp)||120;e.attack=Number(attack)||9;e.speed=1.1;
+		const spriteIdx=BLACK.GAME._ensureEnemySprite(n,this._hash(n.length,4100+n.length),theme||n);
+		e.spriteName=BLACK.GRAPHIC.SPRITES[spriteIdx]?BLACK.GRAPHIC.SPRITES[spriteIdx].name:'';
+		e.aiStates=['IDLE','CHASE','ATTACK','HURT','DEAD'];
+		e.aiInitial='IDLE';
+		e.aiRange=6;
+		e.aiContactRange=1.05;
+		e.aiAttackCooldown=1000/Math.max(0.25,e.speed);
+		this.SCENARIO_DEBUG_PUSH(this.ENTITIES,'ENTITIES.push',e);
 		return 1;
 	},
 	QUEST_SYNC_ASSETS(){
@@ -5835,8 +6940,9 @@ BLACK.GAME={
 			if(q.req_kind==='ALLY') n+=this._ensureCharacter(q.req_payload);
 			if(q.reward_kind==='ITEM') n+=this._ensureItem(q.reward_payload);
 			if(q.reward_kind==='ALLY') n+=this._ensureCharacter(q.reward_payload);
-			if(q.boss_name) n+=this._ensureEnemy(q.boss_name,q.boss_hp,q.boss_attack);
+			if(q.boss_name) n+=this._ensureEnemy(q.boss_name,q.boss_hp,q.boss_attack,q.structure_type||q.boss_name);
 		}
+		n+=this._ensureSpawnerEnemies();
 		if(this.curItem<0&&this.ITEMS.length) this.curItem=0;
 		if(this.curEntity<0&&this.ENTITIES.length) this.curEntity=0;
 		if(typeof document!=='undefined'){this.REFRESH_ITEM();this.REFRESH_ENTITY();}
@@ -5849,8 +6955,9 @@ BLACK.GAME={
 		return {x0:qx*half+1,y0:qy*half+1,x1:qx*half+half-2,y1:qy*half+half-2};
 	},
 	_clearing(cx,cy,r,S){
+		const data=BLACK.GRAPHIC.MAP.DATA;
 		for(let y=cy-r;y<=cy+r;y++) for(let x=cx-r;x<=cx+r;x++){
-			if(x>0&&y>0&&x<S-1&&y<S-1) BLACK.WORLD.MAP.SET(x,y,-1);
+			if(x>0&&y>0&&x<S-1&&y<S-1) data[y*S+x]=-1;
 		}
 	},
 	_siteInArea(area,slot,s,salt,S){
@@ -5861,10 +6968,64 @@ BLACK.GAME={
 		this._clearing(x,y,1,S);
 		return {x,y};
 	},
+	_spawnerSite(area,s,st,salt){
+		const used=(Array.isArray(this.QUESTS)?this.QUESTS:[]).filter(q=>q&&q.area_id===area.id&&q.map_x!=null).map(q=>({x:q.map_x,y:q.map_y}));
+		const candidates=[];
+		const cx=((area.x0+area.x1)/2)|0,cy=((area.y0+area.y1)/2)|0;
+		for(let k=0;k<16;k++){
+			const x=area.x0+3+(this._hash(s,salt+k*2)%Math.max(1,(area.x1-area.x0-5)));
+			const y=area.y0+3+(this._hash(s,salt+k*2+1)%Math.max(1,(area.y1-area.y0-5)));
+			let d=999,insideLandmark=false;
+			for(const u of used) d=Math.min(d,Math.abs(x-u.x)+Math.abs(y-u.y));
+			if(st){
+				insideLandmark=x>=st.origin_x-2&&x<=st.origin_x+st.w+1&&y>=st.origin_y-2&&y<=st.origin_y+st.h+1;
+				d=Math.min(d,Math.abs(x-st.cx)+Math.abs(y-st.cy));
+			}
+			candidates.push({x,y,d,insideLandmark});
+		}
+		candidates.sort((a,b)=>(a.insideLandmark?1:0)-(b.insideLandmark?1:0)||b.d-a.d);
+		const pick=candidates.find(c=>!c.insideLandmark)||candidates[0]||{x:cx,y:cy};
+		this._clearing(pick.x,pick.y,2,BLACK.GRAPHIC.MAP.SIZE||64);
+		return pick;
+	},
+	_generateSpawners(seed,key){
+		this.SPAWNERS=[];
+		const mesos=(Array.isArray(this.AREAS)?this.AREAS:[]).filter(a=>a&&a.kind==='MESO');
+		for(let i=0;i<mesos.length;i++){
+			this.SCENARIO_DEBUG_STAGE('SPAWNER_'+(i+1),'SPAWNERS.push');
+			const area=mesos[i];
+			const st=this.STRUCTURES.find(x=>x.id===area.structure_id);
+			const site=this._spawnerSite(area,seed,st,3000+i*31);
+			const enemy=BLACK.SYS.sanitizeName('SPAWNER_'+key+(i+1)+'_'+area.structure_type);
+			const count=2+(this._hash(seed,3100+i)%3);
+			const waves=2+(this._hash(seed,3200+i)%2);
+			const hp=28+(this._hash(seed,3300+i)%13);
+			const attack=3+(this._hash(seed,3400+i)%4);
+			const points=[{x:site.x-1,y:site.y},{x:site.x+1,y:site.y},{x:site.x,y:site.y-1},{x:site.x,y:site.y+1}];
+			this.SCENARIO_DEBUG_PUSH(this.SPAWNERS,'SPAWNERS.push '+(i+1),{id:'SP_'+key+(i+1),area_id:area.id,x:site.x,y:site.y,enemy_name:enemy,structure_type:area.structure_type||(st&&st.type)||'',count,waves,hp,attack,trigger:'ENTER',mode:'ONCE',spawn_points:points});
+		}
+		return this.SPAWNERS;
+	},
+	_ensureSpawnerEnemies(){
+		if(!Array.isArray(this.ENTITIES)) this.ENTITIES=[];
+		let n=0;
+		for(const sp of this.SPAWNERS||[]){
+			const theme=sp.structure_type||sp.enemy_name;
+			n+=this._ensureEnemy(sp.enemy_name,sp.hp,sp.attack,theme);
+		}
+		return n;
+	},
 	QUEST_GENERATE_SET(seed,setKey){
+		this.SCENARIO_DEBUG_RESET();this.SCENARIO_DEBUG_STAGE('QUEST_GENERATE_SET','start');
 		const s=seed!=null?Number(seed):(BLACK.WORLD.MAP.SEED|0)||123456;
 		const key=String(setKey||'A').replace(/[^A-Z0-9]/gi,'').toUpperCase()||'A';
-		this.QUEST_RESET();this.SCENARIO_SET_ID='SET_'+key;
+		this.QUEST_RESET();
+		// v69: keep scenario collections valid even when an older project/runtime omitted one.
+		if(!Array.isArray(this.QUESTS)) this.QUESTS=[];
+		if(!Array.isArray(this.STRUCTURES)) this.STRUCTURES=[];
+		if(!Array.isArray(this.AREAS)) this.AREAS=[];
+		if(!Array.isArray(this.SPAWNERS)) this.SPAWNERS=[];
+		this.SCENARIO_SET_ID='SET_'+key;
 		const S=BLACK.GRAPHIC.MAP.SIZE||64;
 		const mesoTypes=['CHURCH','VILLAGE','PORT','RUIN','FOREST','GRAVEYARD','CATACOMB','SCHOOL','CLIFF','BEACH','RIVER','TOWN','FORT'];
 		const macroTypes=['CASTLE','FORT','CATACOMB','TOWN'];
@@ -5872,6 +7033,7 @@ BLACK.GAME={
 		const used=[];
 		let mesoSeen=0;
 		for(let a=0;a<4;a++){
+			this.SCENARIO_DEBUG_STAGE('AREA_'+(a+1),'structure');
 			const b=this._areaBounds(a,S);
 			const isMacro=(a===macroSlot);
 			let type;
@@ -5891,13 +7053,18 @@ BLACK.GAME={
 			const area={id:'AREA_'+(a+1),slot:a,kind:isMacro?'MACRO':'MESO',x0:b.x0,y0:b.y0,x1:b.x1,y1:b.y1,structure_id:null,structure_type:type,quest_ids:[]};
 			const st=this._stampStructure(type,ox,oy,S);
 			st.area_id=area.id;
+			if(!Array.isArray(st.bound_quest_ids)) st.bound_quest_ids=[];
+			if(!Array.isArray(area.quest_ids)) area.quest_ids=[];
 			area.structure_id=st.id;
-			this.AREAS.push(area);
+			this.SCENARIO_DEBUG_PUSH(this.AREAS,'AREAS.push '+(a+1),area);
 		}
-		const macroArea=this.AREAS.find(a=>a.kind==='MACRO');
-		const mesoAreas=this.AREAS.filter(a=>a.kind==='MESO');
-		const stOf=(area)=>this.STRUCTURES.find(x=>x.id===area.structure_id);
+		const macroArea=this.AREAS.find(a=>a&&a.kind==='MACRO');
+		const mesoAreas=this.AREAS.filter(a=>a&&a.kind==='MESO');
+		const stOf=(area)=>area?(Array.isArray(this.STRUCTURES)?this.STRUCTURES:[]).find(x=>x&&x.id===area.structure_id):null;
 		const macroSt=stOf(macroArea);
+		if(!macroArea||!macroSt) throw new Error('QUEST_GENERATE_SET: macro area/structure resolution failed');
+		if(!Array.isArray(macroSt.bound_quest_ids)) macroSt.bound_quest_ids=[];
+		if(!Array.isArray(macroArea.quest_ids)) macroArea.quest_ids=[];
 		for(const area of mesoAreas){
 			const st=stOf(area);
 			this._carvePath(st.cx,st.cy,macroSt.cx,macroSt.cy,S);
@@ -5906,6 +7073,7 @@ BLACK.GAME={
 		const macroOrg=(macroCat.tags_org&&macroCat.tags_org[0])||'NATION';
 		const macroRs=this.ORG_ROLES[macroOrg]||this.ORG_ROLES.NATION;
 		const macroBond=macroRs.bonds[this._hash(s,900)%macroRs.bonds.length];
+		this.SCENARIO_DEBUG_STAGE('MACRO','QUESTS.push MACRO');
 		const macroPick=this._takePlaceable(macroSt,s^31);
 		const bossPick=this._takePlaceable(macroSt,s^97);
 		const macroId='MACRO_'+key;
@@ -5916,13 +7084,17 @@ BLACK.GAME={
 			macro.boss_hp=120+(this._hash(s,912)%60);
 			macro.boss_attack=8+(this._hash(s,913)%5);
 		}
-		this.QUESTS.push(macro);
+		this.SCENARIO_DEBUG_PUSH(this.QUESTS,'QUESTS.push MACRO',macro);
 		macroSt.bound_quest_ids.push(macroId);
 		macroArea.quest_ids.push(macroId);
 		const suffix=['A','B','C'];
 		for(let i=0;i<3;i++){
+			this.SCENARIO_DEBUG_STAGE('MESO_'+(i+1),'prepare');
 			const area=mesoAreas[i];
 			const st=stOf(area);
+			if(!area||!st) throw new Error('QUEST_GENERATE_SET: MESO '+(i+1)+' area/structure resolution failed');
+			if(!Array.isArray(st.bound_quest_ids)) st.bound_quest_ids=[];
+			if(!Array.isArray(area.quest_ids)) area.quest_ids=[];
 			const cat=this.STRUCTURE_CATALOG[st.type]||this.STRUCTURE_CATALOG.VILLAGE;
 			const orgList=(cat.tags_org&&cat.tags_org.length)?cat.tags_org:['GUILD'];
 			const org=orgList[this._hash(s,1000+i)%orgList.length];
@@ -5939,23 +7111,29 @@ BLACK.GAME={
 			for(let k=0;k<3;k++){
 				const kind=this.REQ_KINDS[k];
 				const mid='MICRO_'+key+(i+1)+suffix[k];
-				req.push({key:'SLOT_'+k,kind,payload:this._payloadName(kind,key,org,roleB,bond,(i+1)+suffix[k]),from_quest_id:mid,flag:mid+'_DONE',filled:false});
+				this.SCENARIO_DEBUG_PUSH(req,'MESO_'+(i+1)+' req.push '+mid,{key:'SLOT_'+k,kind,payload:this._payloadName(kind,key,org,roleB,bond,(i+1)+suffix[k]),from_quest_id:mid,flag:mid+'_DONE',filled:false});
 			}
-			this.QUESTS.push({id:mesoId,scale:'MESO',parent_id:macroId,set_id:this.SCENARIO_SET_ID,area_id:area.id,structure_id:st.id,structure_type:st.type,title:situation+' AT THE '+st.type,situation,acts:cat.meso_bias||['FETCH'],tags_org:[org],tags_bond:[org+':'+roleA+'>'+roleB,'TENSION:'+bond],roles:[roleA,roleB],req_slots:req,reward_kind:rewardKind,reward_payload:rewardPayload,state:'ACTIVE',map_x:mpick.x,map_y:mpick.y,event_name:'EV_'+mesoId,seed_salt:10+i});
-			st.bound_quest_ids.push(mesoId);
-			area.quest_ids.push(mesoId);
+			this.SCENARIO_DEBUG_PUSH(this.QUESTS,'QUESTS.push '+mesoId,{id:mesoId,scale:'MESO',parent_id:macroId,set_id:this.SCENARIO_SET_ID,area_id:area.id,structure_id:st.id,structure_type:st.type,title:situation+' AT THE '+st.type,situation,acts:cat.meso_bias||['FETCH'],tags_org:[org],tags_bond:[org+':'+roleA+'>'+roleB,'TENSION:'+bond],roles:[roleA,roleB],req_slots:req,reward_kind:rewardKind,reward_payload:rewardPayload,state:'ACTIVE',map_x:mpick.x,map_y:mpick.y,event_name:'EV_'+mesoId,seed_salt:10+i});
+			if(!Array.isArray(st.bound_quest_ids)) st.bound_quest_ids=[];
+			if(!Array.isArray(area.quest_ids)) area.quest_ids=[];
+			this.SCENARIO_DEBUG_PUSH(st.bound_quest_ids,'STRUCTURE.bound_quest_ids.push '+mesoId,mesoId);
+			this.SCENARIO_DEBUG_PUSH(area.quest_ids,'AREA.quest_ids.push '+mesoId,mesoId);
 			const base=this._hash(s,1400+i)%4;
 			for(let k=0;k<3;k++){
+				this.SCENARIO_DEBUG_STAGE('MICRO_'+(i+1)+suffix[k],'QUESTS.push');
 				const slot=req[k];const mid=slot.from_quest_id;
 				const site=this._siteInArea(area,base+k,s,1500+i*10+k,S);
 				this._carvePath(st.cx,st.cy,site.x,site.y,S);
-				this.QUESTS.push({id:mid,scale:'MICRO',parent_id:mesoId,set_id:this.SCENARIO_SET_ID,area_id:area.id,structure_id:st.id,structure_type:st.type,title:this.REQ_ACTS[slot.kind]+' '+slot.payload,situation:bond,acts:[this.REQ_ACTS[slot.kind]],tags_org:[org],tags_bond:[org+':'+roleA+'>'+roleB,'TENSION:'+bond],roles:[roleB],req_kind:slot.kind,req_payload:slot.payload,req_slots:[],order:k,state:k===0?'ACTIVE':'LOCKED',map_x:site.x,map_y:site.y,event_name:'EV_'+mid,seed_salt:100+i*10+k});
-				st.bound_quest_ids.push(mid);
-				area.quest_ids.push(mid);
+				this.SCENARIO_DEBUG_PUSH(this.QUESTS,'QUESTS.push '+mid,{id:mid,scale:'MICRO',parent_id:mesoId,set_id:this.SCENARIO_SET_ID,area_id:area.id,structure_id:st.id,structure_type:st.type,title:this.REQ_ACTS[slot.kind]+' '+slot.payload,situation:bond,acts:[this.REQ_ACTS[slot.kind]],tags_org:[org],tags_bond:[org+':'+roleA+'>'+roleB,'TENSION:'+bond],roles:[roleB],req_kind:slot.kind,req_payload:slot.payload,req_slots:[],order:k,state:k===0?'ACTIVE':'LOCKED',map_x:site.x,map_y:site.y,event_name:'EV_'+mid,seed_salt:100+i*10+k});
+				if(!Array.isArray(st.bound_quest_ids)) st.bound_quest_ids=[];
+				if(!Array.isArray(area.quest_ids)) area.quest_ids=[];
+				this.SCENARIO_DEBUG_PUSH(st.bound_quest_ids,'STRUCTURE.bound_quest_ids.push '+mid,mid);
+				this.SCENARIO_DEBUG_PUSH(area.quest_ids,'AREA.quest_ids.push '+mid,mid);
 			}
-			macro.req_slots.push({key:'REQ_'+rewardKind,kind:rewardKind,payload:rewardPayload,from_quest_id:mesoId,flag:mesoId+'_DONE',filled:false});
+			this.SCENARIO_DEBUG_PUSH(macro.req_slots,'MACRO.req_slots.push '+mesoId,{key:'REQ_'+rewardKind,kind:rewardKind,payload:rewardPayload,from_quest_id:mesoId,flag:mesoId+'_DONE',filled:false});
 		}
 		if(macroKind==='PUZZLE'){
+			this.SCENARIO_DEBUG_STAGE('MACRO_PUZZLE','MACRO.puzzle.push');
 			const names=macro.req_slots.map(sl=>sl.payload);
 			for(let g=0;g<3;g++){
 				const r=this._hash(s,1600+g)%3;
@@ -5963,10 +7141,12 @@ BLACK.GAME={
 				const answer=opts.indexOf(names[g])+1;
 				const src=this.QUEST_GET(macro.req_slots[g].from_quest_id);
 				const tension=((src&&src.tags_bond)||[]).filter(t=>t.indexOf('TENSION:')===0).join('');
-				macro.puzzle.push({prompt:'Seal '+(g+1)+' of the '+macroSt.type+': which claim was won at the '+((src&&src.structure_type)||'AREA')+' ('+(tension||'UNKNOWN')+')?',options:opts,answer});
+				this.SCENARIO_DEBUG_PUSH(macro.puzzle,'MACRO.puzzle.push '+(g+1),{prompt:'Seal '+(g+1)+' of the '+macroSt.type+': which claim was won at the '+((src&&src.structure_type)||'AREA')+' ('+(tension||'UNKNOWN')+')?',options:opts,answer});
 			}
 		}
-		if(BLACK.GRAPHIC&&BLACK.GRAPHIC.MAP&&BLACK.GRAPHIC.MAP.buildTable) BLACK.GRAPHIC.MAP.buildTable();
+		this.SCENARIO_DEBUG_STAGE('SPAWNERS','_generateSpawners');
+		this._generateSpawners(s,key);
+		if(BLACK.GRAPHIC&&BLACK.GRAPHIC.MAP&&!BLACK.GRAPHIC.MAP._bulk&&BLACK.GRAPHIC.MAP.buildTable) BLACK.GRAPHIC.MAP.buildTable();
 		return this.SCENARIO_SET_ID;
 	},
 	QUEST_SET_MAPSIZE(n){
@@ -5975,6 +7155,8 @@ BLACK.GAME={
 		if(map.SIZE!==size){
 			map.SIZE=size;
 			map.DATA=new Array(size*size).fill(-1);
+			map.FLOOR_DATA=new Array(size*size).fill(-1);
+			map.CEIL_DATA=new Array(size*size).fill(-1);
 			const sel=typeof document!=='undefined'?document.getElementById('mapSize'):null;
 			if(sel&&Array.from(sel.options).some(o=>Number(o.value)===size)) sel.value=size;
 		}
@@ -5982,24 +7164,149 @@ BLACK.GAME={
 	},
 	QUEST_APPLY_DEMO_MAP(seed,algo,size){
 		const s=seed!=null?Number(seed):123456;
-		this.QUEST_SET_MAPSIZE(size!=null?size:64);
-		BLACK.WORLD.MAP.setMode('STATIC');
-		BLACK.WORLD.MAP.generateStatic(algo||'ROOMS',s);
-		// The ROOMS/CAVE/NOISE generators mark generic background walls with the
-		// placeholder value 0. Retexture those cells with the STONE wall pattern so
-		// they render as an actual pattern instead of falling back to flat gray
-		// (indistinguishable from the floor). Structure walls get their own
-		// per-type material just below, in QUEST_GENERATE_SET -> _stampStructure.
-		const bgWallTile=this._materialTileIndex('STONE');
-		const gmap=BLACK.GRAPHIC.MAP;
-		for(let i=0;i<gmap.DATA.length;i++){
-			if(gmap.DATA[i]===0) BLACK.WORLD.MAP.SET(i%gmap.SIZE,(i/gmap.SIZE)|0,bgWallTile);
+		if(this._scenarioAppliedSeed===s&&Array.isArray(this.QUESTS)&&this.QUESTS.length&&BLACK.GRAPHIC&&BLACK.GRAPHIC.MAP&&BLACK.GRAPHIC.MAP.DATA&&BLACK.GRAPHIC.MAP.DATA.length){
+			const start=this._findSafeStart(s);
+			if(BLACK.GUI&&BLACK.GUI.TELEPORT) BLACK.GUI.TELEPORT(start.x+0.5,start.y+0.5,0);
+			return this.SCENARIO_SET_ID;
 		}
-		gmap.floorIdx=this._ensureSprite('FLOOR_STONE',this._buildFloorTile);
-		gmap.ceilIdx=this._ensureSprite('CEIL_DARK',this._buildCeilTile);
-		this.QUEST_RESET();
-		return this.QUEST_GENERATE_SET(s,'A');
+		const gmap=BLACK.GRAPHIC.MAP;
+		const bulk=gmap&&typeof gmap.beginBulk==='function';
+		if(bulk) gmap.beginBulk();
+		try{
+			this.QUEST_SET_MAPSIZE(size!=null?size:64);
+			BLACK.WORLD.MAP.setMode('STATIC');
+			BLACK.WORLD.MAP.generateStatic(algo||'ROOMS',s);
+			const bgWallTile=this._materialTileIndex('STONE');
+			const data=gmap.DATA,nn=data.length;
+			for(let i=0;i<nn;i++){
+				if(data[i]===0) data[i]=bgWallTile;
+			}
+			if(gmap.ensureLayers) gmap.ensureLayers();
+			// Dungeon scenario set: stone floor + dark ceiling (not open-world sky/grass).
+			gmap.floorIdx=this._ensureSprite('FLOOR_STONE',this._buildFloorTile);
+			gmap.ceilIdx=this._ensureSprite('CEIL_DARK',this._buildCeilTile);
+			if(gmap.FLOOR_DATA) for(let i=0;i<gmap.FLOOR_DATA.length;i++) gmap.FLOOR_DATA[i]=-1;
+			if(gmap.CEIL_DATA) for(let i=0;i<gmap.CEIL_DATA.length;i++) gmap.CEIL_DATA[i]=-1;
+			this._worldKind='DUNGEON';
+			this.QUEST_RESET();
+			const setId=this.QUEST_GENERATE_SET(s,'A');
+			this._scenarioAppliedSeed=s;
+			const start=this._findSafeStart(s);
+			if(BLACK.GUI&&BLACK.GUI.TELEPORT) BLACK.GUI.TELEPORT(start.x+0.5,start.y+0.5,0);
+			return setId;
+		}finally{
+			if(bulk) gmap.endBulk();
+		}
 	},
+	OPEN_WORLD_GENERATE(seed,size){
+		const s=seed!=null?Number(seed):123456;
+		const S=Math.max(32,Math.min(64,size!=null?Number(size)|0:64));
+		const gmap=BLACK.GRAPHIC.MAP;
+		const bulk=gmap&&typeof gmap.beginBulk==='function';
+		if(bulk) gmap.beginBulk();
+		try{
+			this._worldKind='OPEN';
+			if(BLACK.GRAPHIC&&BLACK.GRAPHIC.seedOpenWorldPalette) BLACK.GRAPHIC.seedOpenWorldPalette();
+			this.QUEST_SET_MAPSIZE(S);
+			BLACK.WORLD.MAP.setMode('STATIC');
+			BLACK.WORLD.MAP.setSeed(s,true);
+			gmap.ensureLayers&&gmap.ensureLayers();
+			// Open-world skins: clay underfoot, sky above; glass patches later.
+			const floorClay=this._floorTileIndex('CLAY');
+			const floorGrass=this._floorTileIndex('GRASS');
+			const floorGlass=this._floorTileIndex('GLASS');
+			const ceilSky=this._ensureSprite('CEIL_SKY',this._buildCeilSky);
+			gmap.floorIdx=floorClay;
+			gmap.ceilIdx=ceilSky;
+			const n=S*S;
+			for(let i=0;i<n;i++){gmap.DATA[i]=-1;gmap.FLOOR_DATA[i]=floorClay;gmap.CEIL_DATA[i]=ceilSky;}
+			const hut=this._materialTileIndex('HUT');
+			const rock=this._materialTileIndex('ROCK');
+			const ivy=this._materialTileIndex('IVY');
+			const wood=this._materialTileIndex('WOOD');
+			const write=(x,y,v)=>{if(x>0&&y>0&&x<S-1&&y<S-1) gmap.DATA[y*S+x]=v;};
+			// Border fence of rock so the world has an edge.
+			for(let i=0;i<S;i++){
+				gmap.DATA[i]=rock; gmap.DATA[(S-1)*S+i]=rock;
+				gmap.DATA[i*S]=rock; gmap.DATA[i*S+S-1]=rock;
+			}
+			const rng=(salt)=>this._hash(s,salt);
+			// Scattered rocks (1-2 cell blobs)
+			const nRock=18+(rng(1)%10);
+			for(let i=0;i<nRock;i++){
+				const cx=2+(rng(10+i)%(S-4)), cy=2+(rng(20+i)%(S-4));
+				write(cx,cy,rock);
+				if(rng(30+i)%2===0) write(cx+1,cy,rock);
+				if(rng(40+i)%3===0) write(cx,cy+1,rock);
+			}
+			// Ivy stone wall segments (short lines as obstacles)
+			const nWall=8+(rng(2)%5);
+			for(let i=0;i<nWall;i++){
+				const horiz=rng(50+i)%2===0;
+				const len=3+(rng(60+i)%5);
+				let x=2+(rng(70+i)%(S-6)), y=2+(rng(80+i)%(S-6));
+				for(let k=0;k<len;k++){
+					write(x,y,ivy);
+					if(horiz) x++; else y++;
+					if(x>=S-2||y>=S-2) break;
+				}
+			}
+			// Wooden huts (small 3x3 shells with open doorway)
+			const nHut=5+(rng(3)%4);
+			for(let i=0;i<nHut;i++){
+				const ox=3+(rng(100+i)%(S-8)), oy=3+(rng(110+i)%(S-8));
+				for(let dy=0;dy<3;dy++) for(let dx=0;dx<3;dx++){
+					const edge=dx===0||dy===0||dx===2||dy===2;
+					if(edge) write(ox+dx,oy+dy,hut);
+				}
+				write(ox+1,oy+2,-1); // door opening south
+				// packed earth floor inside hut
+				gmap.FLOOR_DATA[(oy+1)*S+(ox+1)]=this._floorTileIndex('DIRT');
+			}
+			// Occasional glass floor clearings (shallow pools / crystal pads)
+			const nGlass=4+(rng(4)%3);
+			for(let i=0;i<nGlass;i++){
+				const gx=3+(rng(200+i)%(S-8)), gy=3+(rng(210+i)%(S-8));
+				for(let dy=0;dy<3;dy++) for(let dx=0;dx<3;dx++){
+					const ix=(gy+dy)*S+(gx+dx);
+					if(gmap.DATA[ix]<0) gmap.FLOOR_DATA[ix]=floorGlass;
+				}
+			}
+			// Grass patches mixed into clay
+			const nGrass=12+(rng(5)%8);
+			for(let i=0;i<nGrass;i++){
+				const gx=2+(rng(300+i)%(S-5)), gy=2+(rng(310+i)%(S-5));
+				const r=2+(rng(320+i)%2);
+				for(let dy=-r;dy<=r;dy++) for(let dx=-r;dx<=r;dx++){
+					const x=gx+dx,y=gy+dy;
+					if(x<=0||y<=0||x>=S-1||y>=S-1) continue;
+					const ix=y*S+x;
+					if(gmap.DATA[ix]<0&&gmap.FLOOR_DATA[ix]===floorClay) gmap.FLOOR_DATA[ix]=floorGrass;
+				}
+			}
+			// Sparse wood posts
+			for(let i=0;i<10;i++){
+				const x=2+(rng(400+i)%(S-4)), y=2+(rng(410+i)%(S-4));
+				if(gmap.DATA[y*S+x]<0) write(x,y,wood);
+			}
+			this.QUEST_RESET();
+			this.SCENARIO_SET_ID='OPEN_'+((s%100000)|0);
+			this._scenarioAppliedSeed=null; // open world is not the dungeon scenario set
+			const start={x:S/2|0,y:S/2|0};
+			// clear a spawn radius
+			for(let dy=-2;dy<=2;dy++) for(let dx=-2;dx<=2;dx++){
+				const x=start.x+dx,y=start.y+dy;
+				if(x>0&&y>0&&x<S-1&&y<S-1) gmap.DATA[y*S+x]=-1;
+			}
+			if(BLACK.GUI&&BLACK.GUI.TELEPORT) BLACK.GUI.TELEPORT(start.x+0.5,start.y+0.5,0);
+			if(BLACK.GUI&&BLACK.GUI.markRenderDirty) BLACK.GUI.markRenderDirty();
+			if(BLACK.GUI&&BLACK.GUI.markLightDirty) BLACK.GUI.markLightDirty();
+			return this.SCENARIO_SET_ID;
+		}finally{
+			if(bulk) gmap.endBulk();
+		}
+	},
+
 	_eventLines(q,macroId){
 		const L=[];
 		const x=(Number(q.map_x)||2)+0.5,y=(Number(q.map_y)||2)+0.5;
@@ -6104,6 +7411,187 @@ BLACK.GAME={
 		L.push('ENDEVENT');
 		return L;
 	},
+	_spawnerEventLines(sp){
+		const L=[];
+		sp=sp||{};
+		const points=Array.isArray(sp.spawn_points)&&sp.spawn_points.length?sp.spawn_points:[{x:Number(sp.x)||2,y:Number(sp.y)||2}];
+		const count=Math.max(0,Number(sp.count)|0),waves=Math.max(0,Number(sp.waves)|0);
+		const enemy=BLACK.SYS.sanitizeName(sp.enemy_name||'SPAWNER_ENEMY');
+		const x=(Number(sp.x)||2)+0.5,y=(Number(sp.y)||2)+0.5;
+		L.push('EVENT EV_'+sp.id);
+		L.push('  LET Z=0');
+		L.push('  WAITZONE Z, '+x.toFixed(1)+', '+y.toFixed(1)+', 1.4');
+		L.push('  IF Z = 1 THEN');
+		L.push('    SOUND PLAYWAVE "scenario", "ALERT"');
+		L.push('    DIALOG "The '+enemy+' spawner awakens."');
+		for(let w=0;w<waves;w++){
+			L.push('    SOUND PLAYWAVE "scenario", "HIT"');
+			L.push('    DIALOG "Wave '+(w+1)+' of '+waves+': '+count+' enemies."');
+			for(let i=0;i<count;i++){
+				const p=points[(w*count+i)%points.length];
+				const id='SPAWN_'+sp.id.replace(/[^A-Z0-9_]/g,'_')+'_'+(w+1)+'_'+(i+1);
+				L.push('    LET '+id+'=0');
+				L.push('    SPAWN '+id+', '+enemy+', '+(p.x+0.5).toFixed(1)+', '+(p.y+0.5).toFixed(1));
+			}
+			for(let i=0;i<count;i++){
+				const id='SPAWN_'+sp.id.replace(/[^A-Z0-9_]/g,'_')+'_'+(w+1)+'_'+(i+1);
+				L.push('    LET R=0');
+				L.push('    WAITKILL R, '+id);
+				L.push('    IF R = 2 THEN');
+				L.push('      DIALOG "You have died at the spawner."');
+				L.push('      RETURN');
+				L.push('    ENDIF');
+			}
+		}
+		L.push('    DIALOG "The spawner falls silent."');
+		L.push('  ENDIF');
+		L.push('ENDEVENT');
+		return L;
+	},
+	_findSafeStart(seed){
+		const S=BLACK.GRAPHIC&&BLACK.GRAPHIC.MAP?(BLACK.GRAPHIC.MAP.SIZE|0):64;
+		const map=BLACK.WORLD&&BLACK.WORLD.MAP;
+		const isFloor=(x,y)=>{
+			if(!map||!map.isWall) return false;
+			if(x<1||y<1||x>S-1||y>S-1) return false;
+			return !map.isWall(x+0.5,y+0.5);
+		};
+		const candidates=[];
+		const first=(this.AREAS||[]).find(a=>a&&a.kind==='MESO')||(this.AREAS||[])[0];
+		const st=first&&this.STRUCTURES?this.STRUCTURES.find(x=>x&&x.id===first.structure_id):null;
+		if(st) candidates.push({x:st.cx|0,y:st.cy|0});
+		for(let k=0;k<128;k++) candidates.push({x:1+(this._hash(seed,5000+k)%(Math.max(1,S-2))),y:1+(this._hash(seed,6000+k)%(Math.max(1,S-2)))});
+		for(const c of candidates){
+			if(!isFloor(c.x,c.y)) continue;
+			let clear=true;
+			for(const d of [[1,0],[-1,0],[0,1],[0,-1]]) if(!isFloor(c.x+d[0],c.y+d[1])) {clear=false;break;}
+			if(clear){this._clearing(c.x,c.y,1,S);return {x:c.x,y:c.y};}
+		}
+		for(const c of candidates) if(isFloor(c.x,c.y)){this._clearing(c.x,c.y,1,S);return {x:c.x,y:c.y};}
+		return {x:2,y:2};
+	},
+
+	_mmlDungeon(){
+		// 32-bar dungeon loop: 16 sixteenth-note steps per bar = 512 steps.
+		// D minor / low register / sparse rests / sustained dark timbre.
+		const bars=[
+			['D2',null,'A2',null,'D3',null,'F3',null,'A2',null,'D3',null,'C3',null,'A2',null],
+			['D2',null,'A2',null,'D3',null,'F3',null,'G2',null,'A2',null,'C3',null,'A2',null],
+			['Bb1',null,'F2',null,'Bb2',null,'D3',null,'F2',null,'Bb2',null,'A2',null,'F2',null],
+			['C2',null,'G2',null,'C3',null,'Eb3',null,'G2',null,'C3',null,'Bb2',null,'G2',null],
+			['D2',null,'A2','D3','F3',null,'A2',null,'D3',null,'F3',null,'C3',null,'A2',null],
+			['D2',null,'A2',null,'D3',null,'F3','A3','G3',null,'F3',null,'E3',null,'D3',null],
+			['G2',null,'D3',null,'G3',null,'Bb3',null,'D3',null,'G3',null,'F3',null,'D3',null],
+			['A1',null,'E2',null,'A2',null,'C3',null,'E2',null,'A2',null,'G2',null,'E2',null],
+			['D2',null,'A2',null,'D3',null,'F3',null,'A2',null,'D3',null,'C3',null,'A2',null],
+			['F2',null,'C3',null,'F3',null,'A3',null,'C3',null,'F3',null,'E3',null,'C3',null],
+			['G2',null,'D3',null,'G3',null,'Bb3',null,'D3',null,'G3',null,'F3',null,'D3',null],
+			['A1',null,'E2',null,'A2',null,'C3',null,'E2',null,'A2',null,'C3',null,'G2',null],
+			['Bb1',null,'F2',null,'Bb2',null,'D3',null,'F2',null,'Bb2',null,'A2',null,'F2',null],
+			['C2',null,'G2',null,'C3',null,'Eb3',null,'G2',null,'C3',null,'Bb2',null,'G2',null],
+			['D2',null,'A2','D3','F3',null,'A2',null,'D3',null,'F3',null,'E3','F3','A3',null],
+			['A1',null,'E2',null,'A2',null,'C3',null,'E2',null,'G2',null,'A2',null,'Bb2',null],
+			['D2',null,'A2',null,'D3',null,'F3',null,'A2',null,'D3',null,'C3',null,'A2',null],
+			['D2',null,'A2',null,'D3','F3','A3',null,'G3',null,'F3',null,'E3',null,'D3',null],
+			['Bb1',null,'F2',null,'Bb2',null,'D3',null,'F2',null,'Bb2',null,'A2',null,'F2',null],
+			['C2',null,'G2',null,'C3',null,'Eb3',null,'G2',null,'C3',null,'Bb2',null,'G2',null],
+			['G2',null,'D3',null,'G3',null,'Bb3',null,'D3',null,'G3',null,'F3',null,'D3',null],
+			['A1',null,'E2',null,'A2',null,'C3',null,'E2',null,'A2',null,'G2',null,'E2',null],
+			['D2',null,'A2',null,'D3',null,'F3',null,'A2',null,'D3',null,'C3',null,'A2',null],
+			['F2',null,'C3',null,'F3',null,'A3',null,'C3',null,'F3',null,'E3',null,'C3',null],
+			['G2',null,'D3',null,'G3',null,'Bb3',null,'D3',null,'G3',null,'F3',null,'D3',null],
+			['A1',null,'E2',null,'A2',null,'C3',null,'E2',null,'A2',null,'C3',null,'G2',null],
+			['Bb1',null,'F2',null,'Bb2',null,'D3',null,'F2',null,'Bb2',null,'A2',null,'F2',null],
+			['C2',null,'G2',null,'C3',null,'Eb3',null,'G2',null,'C3',null,'Bb2',null,'G2',null],
+			['D2',null,'A2','D3','F3',null,'A2',null,'D3',null,'F3',null,'E3','F3','A3',null],
+			['A1',null,'E2',null,'A2',null,'C3',null,'E2',null,'G2',null,'A2',null,'Bb2',null],
+			['D2',null,'A2',null,'D3',null,'F3','A3','G3',null,'F3',null,'E3',null,'D3',null],
+			['A1',null,'E2',null,'A2',null,'C3',null,'E2',null,'G2',null,'A2','C3','D3',null]
+		];
+		const data=bars.flat().map(x=>x==null?'':x).join(',');
+		return [
+			'MASTER BPM=92 VOL=88',
+			'WAVE 0 OSC1=SAWTOOTH USE2=1 OSC2=TRIANGLE COMBINE=ADD FILTER=LOW CUTOFF=900 Q=5 A=8 D=90 S=62 R=260 NAME=PAD',
+			'WAVE 1 OSC1=SQUARE USE2=0 OSC2=SQUARE COMBINE=ADD FILTER=LOW CUTOFF=600 Q=3 A=2 D=50 S=0 R=30 NAME=HIT',
+			'WAVE 2 OSC1=TRIANGLE USE2=0 OSC2=TRIANGLE COMBINE=ADD FILTER=LOW CUTOFF=2200 Q=3 A=3 D=60 S=20 R=80 NAME=CHIME',
+			'WAVE 3 OSC1=SAWTOOTH USE2=0 OSC2=SQUARE COMBINE=ADD FILTER=LOW CUTOFF=1100 Q=3 A=2 D=80 S=20 R=100 NAME=ALERT',
+			'WAVE 4 OSC1=NOISE USE2=0 OSC2=SQUARE COMBINE=ADD FILTER=LOW CUTOFF=800 Q=2 A=1 D=25 S=0 R=20 NAME=STEP',
+			'NOTE 0 STEPS=512 BAR=16 DATA='+data+' NAME=BGM_PAT',
+			'NOTE 1 STEPS=1 BAR=4 DATA=C4 NAME=HIT_PAT',
+			'NOTE 2 STEPS=4 BAR=4 DATA=E5,G5,C6, NAME=CHIME_PAT',
+			'NOTE 3 STEPS=2 BAR=4 DATA=G3,C3 NAME=ALERT_PAT',
+			'NOTE 4 STEPS=1 BAR=4 DATA=C2 NAME=STEP_PAT',
+			'TRACK 0 WAVE=0 NOTE=0 VOL=100 PAN=0 NAME=BGM',
+			'TRACK 1 WAVE=1 NOTE=1 VOL=90 PAN=0 NAME=HIT',
+			'TRACK 2 WAVE=2 NOTE=2 VOL=80 PAN=0 NAME=CHIME',
+			'TRACK 3 WAVE=3 NOTE=3 VOL=85 PAN=0 NAME=ALERT'
+		].join('\n');
+	},
+	_mmlOpenWorld(){
+		// 32-bar open-world loop: 16 sixteenth-note steps per bar = 512 steps.
+		// G major / ascending arpeggios / wider register / clear cadence.
+		const bars=[
+			['G3','B3','D4','G4','A4','G4','D4','B3','A3','B3','D4','G4','B4','A4','G4','D4'],
+			['C4','E4','G4','C5','D5','C5','G4','E4','D4','E4','G4','C5','E5','D5','C5','G4'],
+			['D4','F#4','A4','D5','E5','D5','A4','F#4','E4','F#4','A4','D5','F#5','E5','D5','A4'],
+			['G3','B3','D4','G4','B4','A4','G4','D4','G4','B4','D5','G5','A5','G5','D5','B4'],
+			['E4','G4','B4','E5','F#5','E5','B4','G4','A4','B4','E5','G5','B5','A5','G5','E5'],
+			['C4','E4','G4','C5','E5','D5','C5','G4','E4','G4','C5','E5','G5','E5','D5','C5'],
+			['A3','C4','E4','A4','B4','A4','E4','C4','D4','E4','A4','C5','E5','D5','C5','A4'],
+			['D4','F#4','A4','D5','F#5','E5','D5','A4','D4','A4','D5','F#5','A5','F#5','E5','D5'],
+			['G3','B3','D4','G4','A4','B4','D5','G5','B5','A5','G5','D5','B4','A4','G4','D4'],
+			['C4','E4','G4','C5','D5','E5','G5','C6','E5','D5','C5','G4','E4','D4','C4','G3'],
+			['D4','F#4','A4','D5','E5','F#5','A5','D6','F#5','E5','D5','A4','F#4','E4','D4','A3'],
+			['G3','B3','D4','G4','B4','D5','G5','B5','D6','B5','G5','D5','B4','G4','D4','B3'],
+			['E4','G4','B4','E5','G5','B5','E6','B5','G5','E5','B4','G4','F#4','G4','B4','E5'],
+			['C4','E4','G4','C5','E5','G5','C6','G5','E5','C5','G4','E4','D4','E4','G4','C5'],
+			['A3','C4','E4','A4','C5','E5','A5','E5','C5','A4','E4','C4','B3','C4','E4','A4'],
+			['D4','F#4','A4','D5','F#5','A5','D6','A5','F#5','D5','A4','F#4','E4','F#4','A4','D5'],
+			['G3','B3','D4','G4','B4','D5','G5','B5','A5','G5','D5','B4','A4','G4','D4','B3'],
+			['C4','E4','G4','C5','E5','G5','C6','E6','G5','E5','C5','G4','E4','D4','C4','G3'],
+			['D4','F#4','A4','D5','F#5','A5','D6','F#6','A5','F#5','D5','A4','F#4','E4','D4','A3'],
+			['G3','B3','D4','G4','B4','D5','G5','D6','B5','G5','D5','B4','G4','D4','B3','G3'],
+			['E4','G4','B4','E5','G5','B5','E6','G5','E5','B4','G4','F#4','G4','B4','E5','G5'],
+			['C4','E4','G4','C5','E5','G5','C6','E6','G5','E5','C5','G4','E4','D4','C4','G3'],
+			['A3','C4','E4','A4','C5','E5','A5','C6','E5','C5','A4','E4','C4','B3','C4','E4'],
+			['D4','F#4','A4','D5','F#5','A5','D6','F#6','A5','F#5','D5','A4','F#4','E4','D4','A3'],
+			['G3','B3','D4','G4','B4','D5','G5','B5','D6','B5','G5','D5','B4','G4','D4','B3'],
+			['C4','E4','G4','C5','E5','G5','C6','E6','G5','E5','C5','G4','E4','D4','C4','G3'],
+			['A3','C4','E4','A4','C5','E5','A5','C6','E5','C5','A4','E4','C4','B3','C4','A3'],
+			['D4','F#4','A4','D5','F#5','A5','D6','F#6','A5','F#5','D5','A4','F#4','E4','D4','A3'],
+			['G3','B3','D4','G4','B4','D5','G5','B5','A5','G5','D5','B4','A4','G4','D4','B3'],
+			['C4','E4','G4','C5','E5','G5','C6','G5','E5','C5','G4','E4','D4','E4','G4','C5'],
+			['D4','F#4','A4','D5','F#5','A5','D6','A5','F#5','D5','A4','F#4','E4','F#4','A4','D5'],
+			['G3','B3','D4','G4','B4','D5','G5','B5','A5','G5','D5','B4','A4','G4','D4','G3']
+		];
+		const data=bars.flat().join(',');
+		return [
+			'MASTER BPM=116 VOL=90',
+			'WAVE 0 OSC1=TRIANGLE USE2=1 OSC2=SINE COMBINE=ADD FILTER=LOW CUTOFF=3200 Q=2 A=5 D=70 S=68 R=120 NAME=FIELD',
+			'WAVE 1 OSC1=SQUARE USE2=0 OSC2=SQUARE COMBINE=ADD FILTER=LOW CUTOFF=900 Q=2 A=2 D=40 S=0 R=30 NAME=HIT',
+			'WAVE 2 OSC1=TRIANGLE USE2=0 OSC2=SINE COMBINE=ADD FILTER=LOW CUTOFF=3600 Q=2 A=3 D=50 S=18 R=80 NAME=CHIME',
+			'WAVE 3 OSC1=SAWTOOTH USE2=0 OSC2=TRIANGLE COMBINE=ADD FILTER=LOW CUTOFF=1800 Q=2 A=2 D=70 S=20 R=90 NAME=ALERT',
+			'WAVE 4 OSC1=NOISE USE2=0 OSC2=SQUARE COMBINE=ADD FILTER=LOW CUTOFF=900 Q=2 A=1 D=25 S=0 R=20 NAME=STEP',
+			'NOTE 0 STEPS=512 BAR=16 DATA='+data+' NAME=BGM_PAT',
+			'NOTE 1 STEPS=1 BAR=4 DATA=E4 NAME=HIT_PAT',
+			'NOTE 2 STEPS=4 BAR=4 DATA=C5,E5,G5, NAME=CHIME_PAT',
+			'NOTE 3 STEPS=2 BAR=4 DATA=A3,E3 NAME=ALERT_PAT',
+			'NOTE 4 STEPS=1 BAR=4 DATA=C2 NAME=STEP_PAT',
+			'TRACK 0 WAVE=0 NOTE=0 VOL=100 PAN=0 NAME=BGM',
+			'TRACK 1 WAVE=1 NOTE=1 VOL=90 PAN=0 NAME=HIT',
+			'TRACK 2 WAVE=2 NOTE=2 VOL=80 PAN=0 NAME=CHIME',
+			'TRACK 3 WAVE=3 NOTE=3 VOL=85 PAN=0 NAME=ALERT'
+		].join('\n');
+	},
+	_emitSoundLoadLines(bankName,mml){
+		const safe=String(mml||'').replace(/\\/g,"\\\\").replace(/\r/g,"\\r").replace(/\n/g,"\\n").replace(/"/g,"'");
+		return [
+			'REM Sound bank '+bankName+' (BGM + SE via SOUND LOAD / PLAYTRACK / PLAYWAVE)',
+			'SOUND STOPALL',
+			'SOUND LOAD "'+bankName+'", "'+safe+'"',
+			'SOUND PLAYTRACK "'+bankName+'", "BGM"'
+		];
+	},
 	QUEST_SCRIPT(seed){
 		const s=seed!=null?Number(seed):((BLACK.WORLD.MAP.SEED|0)||123456);
 		if(!this.QUESTS.length) this.QUEST_APPLY_DEMO_MAP(s);
@@ -6111,29 +7599,51 @@ BLACK.GAME={
 		const macro=this.QUESTS.find(q=>q.scale==='MACRO');
 		const macroId=macro?String(macro.id).toUpperCase():'MACRO_A';
 		const mesos=this.QUESTS.filter(q=>q.scale==='MESO');
-		const firstArea=this.AREAS.find(a=>a.kind==='MESO')||this.AREAS[0];
-		const start=(firstArea&&this.STRUCTURES.find(x=>x.id===firstArea.structure_id))||this.STRUCTURES[0]||{cx:4,cy:4};
+		const start=this._findSafeStart(s);
 		const L=[];
 		L.push('REM ==== '+this.SCENARIO_SET_ID+' : 1 MACRO / 3 MESO / 9 MICRO (generated) ====');
 		L.push('REM Map '+(BLACK.GRAPHIC.MAP.SIZE||64)+'x'+(BLACK.GRAPHIC.MAP.SIZE||64)+', 2x2 areas: '+this.AREAS.map(a=>a.id+'='+a.kind+':'+a.structure_type).join(' '));
 		L.push('REM Three MESO areas hold three MICRO sites each; the MACRO area holds the final trial ('+(macro?macro.macro_kind:'NONE')+').');
 		L.push('REM Same SEED rebuilds the same map, the same areas and the same 13 quests.');
+		L.push.apply(L, this._emitSoundLoadLines('scenario', this._mmlDungeon()));
 		for(const meso of mesos){
 			for(const micro of this.QUESTS.filter(q=>q.scale==='MICRO'&&q.parent_id===meso.id)) L.push.apply(L,this._eventLines(micro,macroId));
 			L.push.apply(L,this._eventLines(meso,macroId));
 		}
+		for(const sp of this.SPAWNERS||[]) L.push.apply(L,this._spawnerEventLines(sp));
 		if(macro) L.push.apply(L,this._eventLines(macro,macroId));
 		L.push('MAP MODE "STATIC"');
 		L.push('MAP SEED '+s);
+		// v77: atmosphere follows the actual landmark mix picked for this map's areas, reusing
+		// WALL_MATERIAL's existing CATACOMB/RUIN/GRAVEYARD (gloomy) vs CASTLE/FORT (torch-heavy)
+		// classification rather than inventing a second one -- so e.g. a graveyard-and-catacomb
+		// world reads darker with sooner-closing fog, a castle-and-fort world reads warmer and
+		// more lit, and a mixed or plain world gets the engine's own defaults.
+		const gloomyTypes=['CATACOMB','RUIN','GRAVEYARD'],torchTypes=['CASTLE','FORT'];
+		const areaTypes=(this.AREAS||[]).map(a=>a.structure_type);
+		const gloomCount=areaTypes.filter(t=>gloomyTypes.indexOf(t)>=0).length;
+		const torchCount=areaTypes.filter(t=>torchTypes.indexOf(t)>=0).length;
+		// v78: FOG/RANGE now use the LIGHT command's rescaled units (see BLACK.GUI.SET_FOG_MIN/
+		// SET_FOG_RANGE) -- a 0..10 darkness strength and a literal tile count -- instead of the
+		// old raw 0..1 brightness fraction and maxSteps multiplier.
+		const fogStrength=Math.min(10,7+gloomCount*0.7);
+		const fogRangeTiles=Math.max(6,14-gloomCount*2);
+		const lightRadius=Math.min(6,3+torchCount);
+		const lightBonus=Math.min(1.2,0.75+torchCount*0.1);
+		L.push('LIGHT FOG '+fogStrength.toFixed(1));
+		L.push('LIGHT RANGE '+fogRangeTiles);
+		L.push('LIGHT RADIUS '+lightRadius);
+		L.push('LIGHT TORCH '+lightBonus.toFixed(2));
 		L.push('QUESTGEN '+s);
 		L.push('SETCHAPTER 1');
 		L.push('JOURNAL "'+this.SCENARIO_SET_ID+' begins."');
-		L.push('LOCATE '+(start.cx+0.5).toFixed(1)+', '+(start.cy+0.5).toFixed(1)+', 0');
+		L.push('LOCATE '+(start.x+0.5).toFixed(1)+', '+(start.y+0.5).toFixed(1)+', 0');
 		L.push('DIALOG "Four quarters of one land. Nine small tasks feed three, three open the last gate."');
 		for(const meso of mesos){
 			for(const micro of this.QUESTS.filter(q=>q.scale==='MICRO'&&q.parent_id===meso.id)) L.push('CALL '+micro.event_name);
 			L.push('CALL '+meso.event_name);
 		}
+		for(const sp of this.SPAWNERS||[]) L.push('CALL EV_'+sp.id);
 		if(macro) L.push('CALL '+macro.event_name);
 		L.push('SCENE');
 		L.push('DIALOG "Chapter " + STR$(CHAPTER()) + " complete.\\n\\n" + JOURNAL$()');
@@ -6202,7 +7712,7 @@ BLACK.GAME={
 		return n;
 	},
 	migrateEntityNames(){this.ENTITIES.forEach(e=>{if(e.stableId==null) e.stableId=this.nextStableId('entity');if(e.name==null) e.name='';});},
-	DEFAULT_ENTITY(){return {kind:'ENEMY',name:'',stableId:this.nextStableId('entity'),spriteName:'',hp:10,attack:1,speed:1,ai:'STATIC',attackSoundName:''};},
+	DEFAULT_ENTITY(){return {kind:'ENEMY',name:'',stableId:this.nextStableId('entity'),spriteName:'',hp:10,attack:1,speed:1,ai:'STATIC',state:'IDLE',aiStates:['IDLE','CHASE','ATTACK','HURT','DEAD'],aiInitial:'IDLE',aiRange:6,aiContactRange:1.05,aiAttackCooldown:1000,attackSoundName:''};},
 	NEW_ENTITY(){this.ENTITIES.push(this.DEFAULT_ENTITY());this.curEntity=this.ENTITIES.length-1;this.REFRESH_ENTITY();},
 	SELECT_ENTITY(){const sel=document.getElementById('entityList');this.curEntity=parseInt(sel.value);this.syncEntityUI();},
 	RENAME_ENTITY(newName){const e=this.ENTITIES[this.curEntity];if(!e) return;e.name=BLACK.SYS.sanitizeName(newName);this.syncEntityUI();},
@@ -6306,6 +7816,7 @@ BLACK.FIND.REGISTER_SECTION('QUEST',()=>{
 	const out=((BLACK.GAME&&BLACK.GAME.QUESTS)||[]).map(q=>({type:q.scale,name:q.id+(q.structure_type?' ('+q.structure_type+')':'')}));
 	((BLACK.GAME&&BLACK.GAME.AREAS)||[]).forEach(a=>out.push({type:'AREA',name:a.id+' '+a.kind+' '+a.structure_type}));
 	((BLACK.GAME&&BLACK.GAME.STRUCTURES)||[]).forEach(st=>out.push({type:'STRUCTURE',name:st.type+' '+st.id}));
+	((BLACK.GAME&&BLACK.GAME.SPAWNERS)||[]).forEach(sp=>out.push({type:'SPAWNER',name:sp.id+' '+sp.enemy_name}));
 	return out;
 });
 BLACK.FIND.REGISTER_SECTION('RECIPE',()=>{
@@ -6453,22 +7964,23 @@ BLACK.CUI={
 		this._running=true;
 		const out=document.getElementById('out');
 		out.style.color='#ccf';
-		out.textContent='';
+		out.value='';
 		BLACK.GUI.CLEARLOG();
+		if(BLACK.SOUND&&BLACK.SOUND.ENGINE&&BLACK.SOUND.ENGINE.unlock) BLACK.SOUND.ENGINE.unlock();
 		BLACK.SYS.ON('GUI');
 		try{
 			const js=MAGIC.compile(document.getElementById('code').value);
 			const run=new Function('magic','return (async function(){\n'+js+'\n})();');
 			run(MAGIC).then(()=>{
-				if(!out.textContent) out.textContent='RUN OK (no output)';
+				if(!out.value) out.value='RUN OK (no output)';
 				out.style.color='#8f8';
 			}).catch(e=>{
-				out.textContent += (out.textContent?'\n\n':'') + (e.stack||String(e));
+				out.value += (out.value?'\n\n':'') + (e.stack||String(e));
 				out.style.color='#f88';
 				BLACK.GUI.LOG('ERROR: '+(e.message||String(e)));
 			}).finally(()=>{this._running=false;});
 		}catch(e){
-			out.textContent += (out.textContent?'\n\n':'') + (e.stack||String(e));
+			out.value += (out.value?'\n\n':'') + (e.stack||String(e));
 			out.style.color='#f88';
 			this._running=false;
 		}
@@ -6554,7 +8066,7 @@ const MAGIC={
 	pos:0,line:1,DIMS:{},BLOCKS:[],CURRENT_SUB:null,
 	ID_RE:/[A-Za-z_][A-Za-z0-9_]*\$?/y,NUM_RE:/\d+(?:\.\d+)?/y,STR_RE:/"(?:[^"\\]|\\.)*"/y,
 	ID_CHK:/^[A-Za-z_][A-Za-z0-9_]*\$?$/,NUM_CHK:/^\d+(?:\.\d+)?$/,INT_CHK:/^\d+$/,STR_CHK:/^"(?:[^"\\]|\\.)*"$/,
-	skip(code){while(this.pos<code.length){let c=code[this.pos];if(c===' '||c==='\t'||c==='\r')this.pos++;else if(c==='\n'){this.pos++;this.line++}else break}},
+	skip(code){while(this.pos<code.length){let c=code[this.pos];if(c===' '||c==='	'||c==='\r')this.pos++;else if(c==='\n'){this.pos++;this.line++}else break}},
 	read(code){this.skip(code);if(this.pos>=code.length)return null;this.NUM_RE.lastIndex=this.pos;let m=this.NUM_RE.exec(code);if(m){this.pos=this.NUM_RE.lastIndex;return m[0]};let c=code[this.pos];if(c==='"'){this.STR_RE.lastIndex=this.pos;m=this.STR_RE.exec(code);if(m){this.pos=this.STR_RE.lastIndex;return m[0]}this.pos++;return null}if(',;+-*/=()<>^'.includes(c)){this.pos++;return c}this.ID_RE.lastIndex=this.pos;m=this.ID_RE.exec(code);if(m){this.pos=this.ID_RE.lastIndex;return m[0].toUpperCase()}this.pos++;return null},
 	peek(code){const p=this.pos,l=this.line;const x=this.read(code);this.pos=p;this.line=l;return x},
 	tryGet(parser,code){const p=this.pos,l=this.line;try{return parser.call(this,code)}catch(e){if(e&&e.fatal)throw e;this.pos=p;this.line=l;return null}},
@@ -6987,6 +8499,10 @@ MAGIC.registerCommandGroup('MAP',{
 	SETTILE:function(code){const x=this.getExpr(code);this.getOp(code,',');const y=this.getExpr(code);this.getOp(code,',');const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.SET('+x+','+y+','+t+');'},
 	SETFLOOR:function(code){const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.FLOOR('+t+');'},
 	SETCEIL:function(code){const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.CEIL('+t+');'},
+	FLOORTILE:function(code){const x=this.getExpr(code);this.getOp(code,',');const y=this.getExpr(code);this.getOp(code,',');const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.SETFLOOR_AT('+x+','+y+','+t+');'},
+	CEILTILE:function(code){const x=this.getExpr(code);this.getOp(code,',');const y=this.getExpr(code);this.getOp(code,',');const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.SETCEIL_AT('+x+','+y+','+t+');'},
+	FILLFLOOR:function(code){const x1=this.getExpr(code);this.getOp(code,',');const y1=this.getExpr(code);this.getOp(code,',');const x2=this.getExpr(code);this.getOp(code,',');const y2=this.getExpr(code);this.getOp(code,',');const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.FILL_FLOOR('+x1+','+y1+','+x2+','+y2+','+t+');'},
+	FILLCEIL:function(code){const x1=this.getExpr(code);this.getOp(code,',');const y1=this.getExpr(code);this.getOp(code,',');const x2=this.getExpr(code);this.getOp(code,',');const y2=this.getExpr(code);this.getOp(code,',');const t=this.getResourceArg(code,'TILE');return 'BLACK.GRAPHIC.MAP.FILL_CEIL('+x1+','+y1+','+x2+','+y2+','+t+');'},
 	FILL:function(code){const x1=this.getExpr(code);this.getOp(code,',');const y1=this.getExpr(code);this.getOp(code,',');const x2=this.getExpr(code);this.getOp(code,',');const y2=this.getExpr(code);this.getOp(code,',');const t=this.getResourceArg(code,'TILE');return 'BLACK.WORLD.MAP.FILL('+x1+','+y1+','+x2+','+y2+','+t+');'},
 	MODE:function(code){const p=this.pos,l=this.line;const s=this.tryGet(this.getString,code);if(s!==null)return 'BLACK.WORLD.MAP.setMode('+s+');';this.pos=p;this.line=l;const v=this.getVariable(code);return 'BLACK.WORLD.MAP.setMode('+v+');'},
 	SEED:function(code){const seed=this.getExpr(code);return 'BLACK.WORLD.MAP.setSeed('+seed+');'}
@@ -7000,6 +8516,15 @@ MAGIC.registerCommand('TAKE',function(code){const it=this.getResourceArg(code,'I
 MAGIC.registerCommand('WAIT',function(code){const ms=this.getExpr(code);return 'await BLACK.GUI.WAIT_MS('+ms+');'});
 MAGIC.registerCommand('CAMERA',function(code){const sub=this.read(code);if(sub==='FOV'){const n=this.getExpr(code);return 'BLACK.GUI.SET_CAMERA_FOV('+n+');';}if(sub==='RANGE'){const n=this.getExpr(code);return 'BLACK.GUI.SET_CAMERA_RANGE('+n+');';}throw this.fatalError('CAMERA expects FOV or RANGE at line '+this.line);});
 MAGIC.registerCommand('SPEED',function(code){const sub=this.read(code);if(sub==='MOVE'){const n=this.getExpr(code);return 'BLACK.GUI.SET_SPEED_MOVE('+n+');';}if(sub==='TURN'){const n=this.getExpr(code);return 'BLACK.GUI.SET_SPEED_TURN('+n+');';}throw this.fatalError('SPEED expects MOVE or TURN at line '+this.line);});
+MAGIC.registerCommand('LIGHT',function(code){const sub=this.read(code);if(sub==='RADIUS'){const n=this.getExpr(code);return 'BLACK.GUI.SET_LIGHT_RADIUS('+n+');';}if(sub==='TORCH'){const n=this.getExpr(code);return 'BLACK.GUI.SET_LIGHT_BONUS('+n+');';}if(sub==='FOG'){const n=this.getExpr(code);return 'BLACK.GUI.SET_FOG_MIN('+n+');';}if(sub==='RANGE'){const n=this.getExpr(code);return 'BLACK.GUI.SET_FOG_RANGE('+n+');';}throw this.fatalError('LIGHT expects RADIUS, TORCH, FOG or RANGE at line '+this.line);});
+MAGIC.registerCommand('RENDER',function(code){
+	const sub=this.read(code);
+	if(sub==='QUALITY'){const n=this.getExpr(code);return 'BLACK.GUI.SET_RENDER_QUALITY('+n+');'}
+	if(sub==='SCALE'){const n=this.getExpr(code);return 'BLACK.GUI.SET_RENDER_SCALE('+n+');'}
+	if(sub==='WALL'){const n=this.getExpr(code);return 'BLACK.GUI.SET_RENDER_WALL('+n+');'}
+	if(sub==='FLOOR'){const n=this.getExpr(code);return 'BLACK.GUI.SET_RENDER_FLOOR('+n+');'}
+	throw this.fatalError('RENDER expects QUALITY, SCALE, WALL or FLOOR at line '+this.line);
+});
 MAGIC.registerCommand('RESPAWN',function(){return 'BLACK.GUI.RESPAWN();'});
 MAGIC.registerCommand('SETSPAWN',function(code){const a=this.getExprList(code);return 'BLACK.GUI.SETSPAWN('+a.join(',')+');'});
 MAGIC.registerCommand('DESPAWN',function(code){const id=this.getExpr(code);return 'BLACK.GUI.DESPAWN_ENTITY('+id+');'});
